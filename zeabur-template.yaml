@@ -1,0 +1,107 @@
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: Metapi
+spec:
+  description: Meta-layer management and unified proxy for AI API aggregation platforms.
+  icon: https://raw.githubusercontent.com/cita-777/metapi/main/docs/logos/logo-icon-512.png
+  coverImage: https://raw.githubusercontent.com/cita-777/metapi/main/docs/logos/logo-banner.png
+  tags:
+    - AI
+    - Tool
+    - Proxy
+  readme: |-
+    # Metapi (Zeabur Template)
+
+    Metapi is an AI API aggregation proxy with token routing, account management, monitoring, and admin dashboard.
+
+    ## Required Variables
+
+    - `AUTH_TOKEN`: Admin login token for the dashboard.
+    - `PROXY_TOKEN`: Bearer token for downstream `/v1/*` proxy requests.
+
+    ## Data Persistence
+
+    Runtime data is stored in `/app/data` and persisted with a Zeabur volume.
+  variables:
+    - key: AUTH_TOKEN
+      type: STRING
+      name: Admin Token
+      description: Dashboard login token (must be strong and private).
+    - key: PROXY_TOKEN
+      type: STRING
+      name: Proxy Token
+      description: Bearer token used by downstream clients.
+    - key: TZ
+      type: STRING
+      name: Time Zone
+      description: Service timezone (for cron jobs and logs).
+    - key: PORT
+      type: STRING
+      name: Service Port
+      description: Internal HTTP port (default 4000).
+  services:
+    - name: metapi
+      icon: https://raw.githubusercontent.com/cita-777/metapi/main/docs/logos/logo-icon-512.png
+      template: PREBUILT
+      spec:
+        source:
+          image: 1467078763/metapi:latest
+        ports:
+          - id: web
+            port: 4000
+            type: HTTP
+        volumes:
+          - id: data
+            dir: /app/data
+        env:
+          AUTH_TOKEN:
+            default: ${AUTH_TOKEN}
+            expose: false
+          PROXY_TOKEN:
+            default: ${PROXY_TOKEN}
+            expose: false
+          ACCOUNT_CREDENTIAL_SECRET:
+            default: ${AUTH_TOKEN}
+            expose: false
+          CHECKIN_CRON:
+            default: 0 8 * * *
+          BALANCE_REFRESH_CRON:
+            default: 0 * * * *
+          PORT:
+            default: ${PORT}
+          DATA_DIR:
+            default: /app/data
+          TZ:
+            default: ${TZ}
+          NODE_ENV:
+            default: production
+localization:
+  zh-CN:
+    description: Metapi 是一个 AI 中转聚合代理，提供路由、监控和管理后台。
+    variables:
+      - key: AUTH_TOKEN
+        name: 管理员令牌
+        description: 用于登录后台的管理员令牌（请设置强密码）。
+      - key: PROXY_TOKEN
+        name: 代理令牌
+        description: 下游客户端调用 /v1/* 时使用的 Bearer Token。
+      - key: TZ
+        name: 时区
+        description: 服务时区（影响定时任务和日志时间）。
+      - key: PORT
+        name: 服务端口
+        description: 内部监听端口（默认 4000）。
+    readme: |-
+      # Metapi (Zeabur 模板)
+
+      Metapi 是一个 AI 中转聚合代理，支持 Token 路由、账号管理、监控和管理后台。
+
+      ## 必填变量
+
+      - `AUTH_TOKEN`：后台管理员登录令牌
+      - `PROXY_TOKEN`：下游调用 `/v1/*` 使用的 Bearer Token
+
+      ## 数据持久化
+
+      运行数据写入 `/app/data`，模板已配置 Zeabur Volume 挂载持久化。

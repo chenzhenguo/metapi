@@ -27,7 +27,10 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-brightgreen?style=flat">
 </a><!--
 --><img alt="Node.js" src="https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&style=flat"><!--
---><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&style=flat">
+--><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&style=flat"><!--
+--><a href="https://zeabur.com/templates/METAPI?referralCode=cita-777">
+  <img alt="Deploy on Zeabur" src="https://zeabur.com/button.svg" height="20">
+</a>
 </p>
 
 <p align="center">
@@ -270,6 +273,12 @@
 ---
 
 ## 🚀 快速开始
+
+### Zeabur 一键部署
+
+[![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/METAPI?referralCode=cita-777)
+
+点击按钮即可一键部署到 [Zeabur](https://zeabur.com)，自动配置容器、持久化存储和域名，部署后按提示填写 `AUTH_TOKEN` 和 `PROXY_TOKEN` 即可使用。
 
 ### Docker Compose（推荐）
 
