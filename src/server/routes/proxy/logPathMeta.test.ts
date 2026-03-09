@@ -31,4 +31,22 @@ describe('composeProxyLogMessage', () => {
       errorMessage: '',
     })).toBe(null);
   });
+
+  it('adds client and session metadata ahead of path metadata', () => {
+    expect(composeProxyLogMessage({
+      clientKind: 'codex',
+      sessionId: 'codex-session-123',
+      downstreamPath: '/v1/responses',
+      errorMessage: 'upstream failed',
+    })).toBe('[client:codex] [session:codex-session-123] [downstream:/v1/responses] upstream failed');
+  });
+
+  it('reuses existing client and session metadata without duplication', () => {
+    expect(composeProxyLogMessage({
+      clientKind: 'claude_code',
+      sessionId: 'session-123',
+      downstreamPath: '/v1/messages',
+      errorMessage: '[client:claude_code] [session:session-123] [upstream:/v1/messages] bad request',
+    })).toBe('[client:claude_code] [session:session-123] [downstream:/v1/messages] [upstream:/v1/messages] bad request');
+  });
 });

@@ -24,6 +24,7 @@ import { buildStartupSummaryLines } from './services/startupInfo.js';
 import { repairStoredCreatedAtValues } from './services/storedTimestampRepairService.js';
 import { migrateSiteApiKeysToAccounts } from './services/siteApiKeyMigrationService.js';
 import { ensureDefaultSitesSeeded } from './services/defaultSiteSeedService.js';
+import { ensureRuntimeDatabaseReady } from './runtimeDatabaseBootstrap.js';
 import { isPublicApiRoute, registerDesktopRoutes } from './desktop.js';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -39,18 +40,6 @@ import {
   switchRuntimeDatabase,
   type RuntimeDbDialect,
 } from './db/index.js';
-
-let sqliteMigrationsBootstrapped = false;
-
-async function ensureSqliteRuntimeMigrations() {
-  if (runtimeDbDialect !== 'sqlite') return;
-  const migrateModule = await import('./db/migrate.js');
-  if (sqliteMigrationsBootstrapped) {
-    migrateModule.runSqliteMigrations();
-    return;
-  }
-  sqliteMigrationsBootstrapped = true;
-}
 
 function toSettingsMap(rows: Array<{ key: string; value: string }>) {
   return new Map(rows.map((row) => [row.key, row.value]));
@@ -199,8 +188,12 @@ function applyRuntimeSettings(settingsMap: Map<string, string>) {
   }
 }
 
-// Ensure sqlite tables exist before reading runtime settings.
-await ensureSqliteRuntimeMigrations();
+// Ensure the current runtime database is bootstrapped before reading settings.
+await ensureRuntimeDatabaseReady({
+  dialect: runtimeDbDialect,
+  connectionString: config.dbUrl,
+  ssl: config.dbSsl,
+});
 
 // Load runtime config overrides from settings
 try {
@@ -208,12 +201,27 @@ try {
   const initialMap = toSettingsMap(initialRows);
   const savedDbConfig = extractSavedRuntimeDatabaseConfig(initialMap);
   const activeDbUrl = (config.dbUrl || '').trim();
+  const originalRuntimeConfig = {
+    dialect: runtimeDbDialect,
+    dbUrl: activeDbUrl,
+    ssl: config.dbSsl,
+  };
   if (savedDbConfig && (savedDbConfig.dialect !== runtimeDbDialect || savedDbConfig.dbUrl !== activeDbUrl || savedDbConfig.ssl !== config.dbSsl)) {
     try {
       await switchRuntimeDatabase(savedDbConfig.dialect, savedDbConfig.dbUrl, savedDbConfig.ssl);
-      await ensureSqliteRuntimeMigrations();
       console.log(`Loaded runtime DB config from settings: ${savedDbConfig.dialect}`);
     } catch (error) {
+      const currentDbUrl = (config.dbUrl || '').trim();
+      const switchedAway = runtimeDbDialect !== originalRuntimeConfig.dialect
+        || currentDbUrl !== originalRuntimeConfig.dbUrl
+        || config.dbSsl !== originalRuntimeConfig.ssl;
+      if (switchedAway) {
+        await switchRuntimeDatabase(
+          originalRuntimeConfig.dialect,
+          originalRuntimeConfig.dbUrl,
+          originalRuntimeConfig.ssl,
+        );
+      }
       console.warn(`Failed to switch runtime DB from settings: ${(error as Error)?.message || 'unknown error'}`);
     }
   }

@@ -15,6 +15,20 @@ function splitBase64DataUrl(value: string): { mimeType: string; data: string } |
   };
 }
 
+function normalizeFileSourceSelection(
+  fileData: string,
+  fileUrl: string,
+  fileId: string,
+): { fileData: string; fileUrl: string; fileId: string } {
+  if (fileData) {
+    return { fileData, fileUrl: '', fileId: '' };
+  }
+  if (fileUrl) {
+    return { fileData: '', fileUrl, fileId: '' };
+  }
+  return { fileData: '', fileUrl: '', fileId };
+}
+
 export function ensureBase64DataUrl(fileData: string, mimeType?: string | null): string {
   const trimmedData = asTrimmedString(fileData);
   if (!trimmedData) return trimmedData;
@@ -58,9 +72,14 @@ export function normalizeInputFileBlock(item: Record<string, unknown>): Normaliz
   const type = asTrimmedString(item.type).toLowerCase();
 
   if (type === 'input_file') {
-    const fileId = asTrimmedString(item.file_id);
-    const fileData = asTrimmedString(item.file_data);
-    const fileUrl = asTrimmedString(item.file_url);
+    const selectedSource = normalizeFileSourceSelection(
+      asTrimmedString(item.file_data),
+      asTrimmedString(item.file_url),
+      asTrimmedString(item.file_id),
+    );
+    const fileId = selectedSource.fileId;
+    const fileData = selectedSource.fileData;
+    const fileUrl = selectedSource.fileUrl;
     const filename = asTrimmedString(item.filename);
     let mimeType = asTrimmedString(item.mime_type ?? item.mimeType) || null;
     if (!fileId && !fileData && !fileUrl) return null;
@@ -81,9 +100,14 @@ export function normalizeInputFileBlock(item: Record<string, unknown>): Normaliz
 
   if (type === 'file') {
     const file = isRecord(item.file) ? item.file : item;
-    const fileId = asTrimmedString(file.file_id ?? item.file_id);
-    const fileData = asTrimmedString(file.file_data ?? item.file_data);
-    const fileUrl = asTrimmedString(file.file_url ?? item.file_url);
+    const selectedSource = normalizeFileSourceSelection(
+      asTrimmedString(file.file_data ?? item.file_data),
+      asTrimmedString(file.file_url ?? item.file_url),
+      asTrimmedString(file.file_id ?? item.file_id),
+    );
+    const fileId = selectedSource.fileId;
+    const fileData = selectedSource.fileData;
+    const fileUrl = selectedSource.fileUrl;
     const filename = asTrimmedString(file.filename ?? item.filename);
     let mimeType = asTrimmedString(file.mime_type ?? file.mimeType ?? item.mime_type ?? item.mimeType) || null;
     if (!fileId && !fileData && !fileUrl) return null;

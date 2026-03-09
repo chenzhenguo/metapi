@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom'
 import { ToastProvider, useToast } from './components/Toast.js';
 import SearchModal from './components/SearchModal.js';
 import NotificationPanel from './components/NotificationPanel.js';
+import TooltipLayer from './components/TooltipLayer.js';
 import { api } from './api.js';
 import { clearAuthSession, hasValidAuthSession, persistAuthSession } from './authSession.js';
 import {
@@ -558,20 +559,19 @@ function AppShell() {
         <div className="topbar-right">
           <button
             className="topbar-icon-btn"
-            data-tooltip={language === 'zh' ? 'Switch to English' : '切换到中文'}
             aria-label={language === 'zh' ? 'Switch to English' : '切换到中文'}
             onClick={toggleLanguage}
             style={{ minWidth: 36, fontSize: 12, fontWeight: 700 }}
           >
             {language === 'zh' ? 'EN' : '中'}
           </button>
-          <button className="topbar-search-trigger" data-tooltip={t('搜索 (Ctrl+K)')} aria-label={t('搜索 (Ctrl+K)')} onClick={() => setShowSearch(true)}>
+          <button className="topbar-search-trigger" aria-label={t('搜索 (Ctrl+K)')} onClick={() => setShowSearch(true)}>
             <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             <span className="topbar-search-label">{t('搜索')}</span>
             <kbd className="topbar-search-kbd">Ctrl K</kbd>
           </button>
           <div style={{ position: 'relative' }}>
-            <button ref={notifBtnRef} className="topbar-icon-btn" data-tooltip={t('通知')} aria-label={t('通知')} onClick={() => setShowNotifications(!showNotifications)}>
+            <button ref={notifBtnRef} className="topbar-icon-btn" aria-label={t('通知')} onClick={() => setShowNotifications(!showNotifications)}>
               <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
               {unreadCount > 0 && (
                 <span className="topbar-badge">
@@ -584,9 +584,6 @@ function AppShell() {
           <div ref={themeMenuRef} style={{ position: 'relative' }}>
             <button
               className="topbar-icon-btn"
-              data-tooltip={themeMode === 'system'
-                ? `${t('跟随系统')} (${resolvedThemeLabel})`
-                : (themeMode === 'light' ? t('浅色模式') : t('深色模式'))}
               aria-label={themeMode === 'system'
                 ? `${t('跟随系统')} (${resolvedThemeLabel})`
                 : (themeMode === 'light' ? t('浅色模式') : t('深色模式'))}
@@ -632,7 +629,6 @@ function AppShell() {
           <div ref={userMenuRef} style={{ position: 'relative' }}>
             <div
               className="topbar-avatar"
-              data-tooltip={displayName}
               aria-label={displayName}
               onClick={() => {
                 setShowUserMenu(!showUserMenu);
@@ -741,6 +737,7 @@ export default function App() {
     <I18nProvider>
       <ToastProvider>
         <AppShell />
+        <TooltipLayer />
       </ToastProvider>
     </I18nProvider>
   );

@@ -31,7 +31,16 @@ describe('openAiChatTransformer.inbound', () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.value?.upstreamBody).toMatchObject({
+    expect(result.value).toMatchObject({
+      protocol: 'openai/chat',
+      model: 'gpt-5',
+      stream: false,
+      rawBody: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+    expect(result.value?.parsed.upstreamBody).toMatchObject({
       modalities: ['text', 'audio'],
       audio: { voice: 'alloy', format: 'mp3' },
       reasoning_effort: 'high',
@@ -46,7 +55,7 @@ describe('openAiChatTransformer.inbound', () => {
       response_format: { type: 'json_object' },
       stream_options: { include_usage: true },
     });
-    expect((result.value as any)?.requestMetadata).toEqual({
+    expect((result.value as any)?.metadata).toEqual({
       modalities: ['text', 'audio'],
       audio: { voice: 'alloy', format: 'mp3' },
       reasoningEffort: 'high',
@@ -82,14 +91,19 @@ describe('openAiChatTransformer.inbound', () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.value?.upstreamBody).toMatchObject({
+    expect(result.value).toMatchObject({
+      protocol: 'openai/chat',
+      model: 'gpt-5',
+      stream: false,
+    });
+    expect(result.value?.parsed.upstreamBody).toMatchObject({
       modalities: ['text', 42, 'audio', '', null],
       reasoning_budget: '2048',
       top_logprobs: '5',
       logit_bias: { '42': '7', invalid: 'oops' },
       stream_options: { include_usage: 1 },
     });
-    expect((result.value as any)?.requestMetadata).toEqual({
+    expect((result.value as any)?.metadata).toEqual({
       modalities: ['text', 'audio'],
       audio: { voice: 'alloy', format: 'wav' },
       reasoningEffort: 'medium',
@@ -107,6 +121,28 @@ describe('openAiChatTransformer.inbound', () => {
 });
 
 describe('openAiChatTransformer.outbound', () => {
+  it('normalizes inline think tags in final chat responses', () => {
+    const normalized = openAiChatTransformer.transformFinalResponse({
+      id: 'chatcmpl-inline-think',
+      model: 'gpt-5',
+      created: 123,
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: '<think>plan quietly</think>visible answer',
+        },
+      }],
+    }, 'gpt-5');
+
+    expect(normalized).toMatchObject({
+      content: 'visible answer',
+      reasoningContent: 'plan quietly',
+      finishReason: 'stop',
+    });
+  });
+
   it('carries annotations, citations, and detailed usage through final serialization', () => {
     const normalized = openAiChatTransformer.transformFinalResponse({
       id: 'chatcmpl-1',
@@ -401,6 +437,53 @@ describe('openAiChatTransformer.stream', () => {
       'https://a.example',
       'https://b.example',
     ]);
+  });
+
+  it('normalizes inline think tags inside multi-choice stream chunks', () => {
+    const context = openAiChatTransformer.createStreamContext('gpt-5');
+    const event = openAiChatTransformer.transformStreamEvent({
+      id: 'chatcmpl-stream-multi-think',
+      model: 'gpt-5',
+      choices: [
+        {
+          index: 0,
+          finish_reason: null,
+          delta: {
+            role: 'assistant',
+            content: '<think>plan-0</think>choice-0',
+          },
+        },
+        {
+          index: 1,
+          finish_reason: null,
+          delta: {
+            role: 'assistant',
+            content: '<think>plan-1</think>choice-1',
+          },
+        },
+      ],
+    }, context, 'gpt-5');
+
+    const payloads = parseSsePayloads(
+      openAiChatTransformer.serializeStreamEvent(event, context, createClaudeDownstreamContext()),
+    );
+
+    expect((payloads[0] as any).choices[0]).toMatchObject({
+      index: 0,
+      delta: {
+        role: 'assistant',
+        content: 'choice-0',
+        reasoning_content: 'plan-0',
+      },
+    });
+    expect((payloads[0] as any).choices[1]).toMatchObject({
+      index: 1,
+      delta: {
+        role: 'assistant',
+        content: 'choice-1',
+        reasoning_content: 'plan-1',
+      },
+    });
   });
 });
 

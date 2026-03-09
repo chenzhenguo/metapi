@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, create } from 'react-test-renderer';
+import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/Toast.js';
 import Accounts from './Accounts.js';
@@ -21,6 +21,12 @@ async function flushMicrotasks() {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function collectText(node: ReactTestInstance): string {
+  return (node.children || [])
+    .map((child) => (typeof child === 'string' ? child : collectText(child)))
+    .join('');
 }
 
 describe('Accounts segmented connections view', () => {
@@ -76,10 +82,28 @@ describe('Accounts segmented connections view', () => {
 
       const rendered = JSON.stringify(root.toJSON());
       expect(rendered).toContain('连接管理');
-      expect(rendered).toContain('API Key 连接');
+      expect(rendered).toContain('账号管理');
+      expect(rendered).toContain('API Key管理');
+      expect(rendered).toContain('账号令牌管理');
+      expect(rendered).toContain('用于签到、余额、状态维护');
+      expect(rendered).toContain('只有 Base URL + Key 时使用，只负责代理调用');
+      expect(rendered).toContain('从账号同步或手动维护，供路由实际调用');
       expect(rendered).toContain('Key Site');
       expect(rendered).not.toContain('仅代理');
       expect(rendered).not.toContain('session-user');
+
+      const segmentButtons = root.root.findAll((node) => {
+        if (node.type !== 'button') return false;
+        const text = collectText(node);
+        return text === '账号管理' || text === 'API Key管理' || text === '账号令牌管理';
+      });
+      expect(segmentButtons).toHaveLength(3);
+      expect(segmentButtons[0]?.props['data-tooltip-side']).toBe('bottom');
+      expect(segmentButtons[0]?.props['data-tooltip-align']).toBe('start');
+      expect(segmentButtons[1]?.props['data-tooltip-side']).toBe('bottom');
+      expect(segmentButtons[1]?.props['data-tooltip-align']).toBe('center');
+      expect(segmentButtons[2]?.props['data-tooltip-side']).toBe('bottom');
+      expect(segmentButtons[2]?.props['data-tooltip-align']).toBe('end');
     } finally {
       root?.unmount();
     }

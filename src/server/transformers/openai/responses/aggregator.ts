@@ -768,6 +768,99 @@ function buildSyntheticToolEvents(
   return lines;
 }
 
+function buildSyntheticTerminalItemDoneEvents(
+  state: OpenAiResponsesAggregateState,
+  status: 'completed' | 'failed',
+): string[] {
+  const lines: string[] = [];
+
+  for (let index = 0; index < state.outputItems.length; index += 1) {
+    const item = state.outputItems[index];
+    if (!isRecord(item)) continue;
+
+    const currentStatus = asTrimmedString(item.status).toLowerCase();
+    if (currentStatus === 'completed' || currentStatus === 'failed') continue;
+
+    const itemType = asTrimmedString(item.type).toLowerCase();
+    const itemId = ensureOutputItemId(asTrimmedString(item.id), 'out', index);
+    item.id = itemId;
+
+    if (itemType === 'message') {
+      const content = Array.isArray(item.content) ? item.content as AggregateOutputItem[] : [];
+      const part = content[0];
+      if (isRecord(part)) {
+        const text = typeof part.text === 'string' ? part.text : String(part.text ?? '');
+        lines.push(serializeSse('response.output_text.done', {
+          type: 'response.output_text.done',
+          output_index: index,
+          item_id: itemId,
+          text,
+        }));
+        lines.push(serializeSse('response.content_part.done', {
+          type: 'response.content_part.done',
+          output_index: index,
+          item_id: itemId,
+          content_index: 0,
+          part: cloneJson(part),
+        }));
+      }
+    } else if (itemType === 'reasoning') {
+      const summary = Array.isArray(item.summary) ? item.summary as AggregateOutputItem[] : [];
+      const part = summary[0];
+      if (isRecord(part)) {
+        const text = typeof part.text === 'string' ? part.text : String(part.text ?? '');
+        lines.push(serializeSse('response.reasoning_summary_text.done', {
+          type: 'response.reasoning_summary_text.done',
+          item_id: itemId,
+          output_index: index,
+          summary_index: 0,
+          text,
+        }));
+        lines.push(serializeSse('response.reasoning_summary_part.done', {
+          type: 'response.reasoning_summary_part.done',
+          item_id: itemId,
+          output_index: index,
+          summary_index: 0,
+          part: cloneJson(part),
+        }));
+      }
+    } else if (itemType === 'function_call') {
+      const callId = asTrimmedString(item.call_id) || itemId;
+      const name = asTrimmedString(item.name);
+      const argumentsText = typeof item.arguments === 'string' ? item.arguments : String(item.arguments ?? '');
+      lines.push(serializeSse('response.function_call_arguments.done', {
+        type: 'response.function_call_arguments.done',
+        item_id: itemId,
+        call_id: callId,
+        output_index: index,
+        ...(name ? { name } : {}),
+        arguments: argumentsText,
+      }));
+    } else if (itemType === 'custom_tool_call') {
+      const callId = asTrimmedString(item.call_id) || itemId;
+      const name = asTrimmedString(item.name);
+      const inputText = typeof item.input === 'string' ? item.input : String(item.input ?? '');
+      lines.push(serializeSse('response.custom_tool_call_input.done', {
+        type: 'response.custom_tool_call_input.done',
+        item_id: itemId,
+        call_id: callId,
+        output_index: index,
+        ...(name ? { name } : {}),
+        input: inputText,
+      }));
+    }
+
+    item.status = status;
+    lines.push(serializeSse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: index,
+      item: cloneJson(item),
+    }));
+  }
+
+  return lines;
+}
+
 export function serializeConvertedResponsesEvents(input: {
   state: OpenAiResponsesAggregateState;
   streamContext: StreamTransformContext;
@@ -806,8 +899,10 @@ export function completeResponsesStream(
   if (state.failed || state.completed) {
     return [serializeDone()];
   }
+  const lines = buildSyntheticTerminalItemDoneEvents(state, 'completed');
   state.completed = true;
   return [
+    ...lines,
     serializeSse('response.completed', {
       type: 'response.completed',
       response: materializeResponse(state, streamContext, usage, null, 'completed'),
@@ -825,6 +920,7 @@ export function failResponsesStream(
   if (state.failed) {
     return [serializeDone()];
   }
+  const lines = buildSyntheticTerminalItemDoneEvents(state, 'failed');
   state.failed = true;
   const errorPayload = cloneRecord(payload);
   const message = (
@@ -833,6 +929,7 @@ export function failResponsesStream(
       : (typeof errorPayload?.message === 'string' ? errorPayload.message : 'upstream stream failed')
   );
   return [
+    ...lines,
     serializeSse('response.failed', {
       type: 'response.failed',
       response: materializeResponse(state, streamContext, usage, cloneRecord(errorPayload?.response), 'failed'),

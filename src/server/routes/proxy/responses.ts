@@ -11,10 +11,7 @@ import { mergeProxyUsage, parseProxyUsage } from '../../services/proxyUsageParse
 import { resolveProxyUrlForSite, withSiteRecordProxyRequestInit } from '../../services/siteProxy.js';
 import { openAiResponsesTransformer } from '../../transformers/openai/responses/index.js';
 import {
-  buildMinimalJsonHeadersForCompatibility,
   buildUpstreamEndpointRequest,
-  isEndpointDowngradeError,
-  isUnsupportedMediaTypeError,
   resolveUpstreamEndpointCandidates,
 } from './upstreamEndpoint.js';
 import { ensureModelAllowedForDownstreamKey, getDownstreamRoutingPolicy, recordDownstreamCostUsage } from './downstreamPolicy.js';
@@ -23,6 +20,7 @@ import { executeEndpointFlow, withUpstreamPath } from './endpointFlow.js';
 import { formatUtcSqlDateTime } from '../../services/localTimeService.js';
 import { resolveProxyLogBilling } from './proxyBilling.js';
 import { getProxyResourceOwner } from '../../middleware/auth.js';
+import { detectDownstreamClientContext, isCodexResponsesSurface, type DownstreamClientContext } from './downstreamClientContext.js';
 import { normalizeInputFileBlock } from '../../transformers/shared/inputFile.js';
 import {
   ProxyInputFileResolutionError,
@@ -85,42 +83,6 @@ function carriesResponsesReasoningContinuity(value: unknown): boolean {
     || carriesResponsesReasoningContinuity(value.content);
 }
 
-function isCodexResponsesSurface(headers?: Record<string, unknown>): boolean {
-  if (!headers) return false;
-
-  const normalizeHeaderValue = (value: unknown): string => {
-    if (typeof value === 'string') return value.trim();
-    if (Array.isArray(value)) {
-      return value
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .find((item) => item.length > 0) || '';
-    }
-    return '';
-  };
-
-  let sawOpenAiBeta = false;
-  let sawStainless = false;
-
-  for (const [rawKey, rawValue] of Object.entries(headers)) {
-    const key = rawKey.trim().toLowerCase();
-    const value = normalizeHeaderValue(rawValue);
-    if (!key || !value) continue;
-
-    if (key === 'originator' && value.toLowerCase() === 'codex_cli_rs') {
-      return true;
-    }
-    if (key === 'openai-beta') {
-      sawOpenAiBeta = true;
-    }
-    if (key.startsWith('x-stainless-')) {
-      sawStainless = true;
-    }
-  }
-
-  return sawOpenAiBeta || sawStainless;
-}
-
 function wantsNativeResponsesReasoning(body: unknown): boolean {
   if (!isRecord(body)) return false;
   const include = normalizeIncludeList(body.include);
@@ -156,16 +118,27 @@ export async function responsesProxyRoute(app: FastifyInstance) {
     reply: FastifyReply,
     downstreamPath: string,
   ) => {
-    const body = request.body as any;
-    const requestedModel = typeof body?.model === 'string' ? body.model.trim() : '';
-    if (!requestedModel) {
-      return reply.code(400).send({ error: { message: 'model is required', type: 'invalid_request_error' } });
+    const body = request.body as Record<string, unknown>;
+    const clientContext = detectDownstreamClientContext({
+      downstreamPath,
+      headers: request.headers as Record<string, unknown>,
+      body,
+    });
+    const defaultEncryptedReasoningInclude = isCodexResponsesSurface(
+      request.headers as Record<string, unknown>,
+    );
+    const parsedRequestEnvelope = openAiResponsesTransformer.transformRequest(body, {
+      defaultEncryptedReasoningInclude,
+    });
+    if (parsedRequestEnvelope.error) {
+      return reply.code(parsedRequestEnvelope.error.statusCode).send(parsedRequestEnvelope.error.payload);
     }
+    const requestEnvelope = parsedRequestEnvelope.value!;
+    const requestedModel = requestEnvelope.model;
+    const isStream = requestEnvelope.stream;
     if (!await ensureModelAllowedForDownstreamKey(request, reply, requestedModel)) return;
     const downstreamPolicy = getDownstreamRoutingPolicy(request);
     const isCompactRequest = downstreamPath === '/v1/responses/compact';
-
-    const isStream = body.stream === true;
     const excludeChannelIds: number[] = [];
     let retryCount = 0;
 
@@ -193,15 +166,11 @@ export async function responsesProxyRoute(app: FastifyInstance) {
 
       const modelName = selected.actualModel || requestedModel;
       const owner = getProxyResourceOwner(request);
-      const defaultEncryptedReasoningInclude = isCodexResponsesSurface(
-        request.headers as Record<string, unknown>,
-      );
-      let normalizedResponsesBody = openAiResponsesTransformer.inbound.sanitizeProxyBody(
-        body,
-        modelName,
-        isStream,
-        { defaultEncryptedReasoningInclude },
-      );
+      let normalizedResponsesBody: Record<string, unknown> = {
+        ...requestEnvelope.parsed.normalizedBody,
+        model: modelName,
+        stream: isStream,
+      };
       if (owner) {
         try {
           normalizedResponsesBody = await resolveResponsesBodyInputFiles(normalizedResponsesBody, owner);
@@ -248,6 +217,43 @@ export async function responsesProxyRoute(app: FastifyInstance) {
       if (endpointCandidates.length === 0) {
         endpointCandidates.push('responses', 'chat', 'messages');
       }
+      const buildEndpointRequest = (endpoint: 'chat' | 'messages' | 'responses') => {
+        const endpointRequest = buildUpstreamEndpointRequest({
+          endpoint,
+          modelName,
+          stream: isStream,
+          tokenValue: selected.tokenValue,
+          sitePlatform: selected.site.platform,
+          siteUrl: selected.site.url,
+          openaiBody: openAiBody,
+          downstreamFormat: 'responses',
+          responsesOriginalBody: normalizedResponsesBody,
+          downstreamHeaders: request.headers as Record<string, unknown>,
+        });
+        const upstreamPath = (
+          isCompactRequest && endpoint === 'responses'
+            ? `${endpointRequest.path}/compact`
+            : endpointRequest.path
+        );
+        return {
+          endpoint,
+          path: upstreamPath,
+          headers: endpointRequest.headers,
+          body: endpointRequest.body as Record<string, unknown>,
+        };
+      };
+      const endpointStrategy = openAiResponsesTransformer.compatibility.createEndpointStrategy({
+        isStream,
+        requiresNativeResponsesFileUrl,
+        dispatchRequest: (compatibilityRequest, targetUrl) => fetch(
+          targetUrl ?? `${selected.site.url}${compatibilityRequest.path}`,
+          withSiteRecordProxyRequestInit(selected.site, {
+            method: 'POST',
+            headers: compatibilityRequest.headers,
+            body: JSON.stringify(compatibilityRequest.body),
+          }),
+        ),
+      });
 
       const startTime = Date.now();
 
@@ -256,114 +262,9 @@ export async function responsesProxyRoute(app: FastifyInstance) {
           siteUrl: selected.site.url,
           proxyUrl: resolveProxyUrlForSite(selected.site),
           endpointCandidates,
-          buildRequest: (endpoint) => {
-            const endpointRequest = buildUpstreamEndpointRequest({
-              endpoint,
-              modelName,
-              stream: isStream,
-              tokenValue: selected.tokenValue,
-              sitePlatform: selected.site.platform,
-              siteUrl: selected.site.url,
-              openaiBody: openAiBody,
-              downstreamFormat: 'responses',
-              responsesOriginalBody: normalizedResponsesBody,
-              downstreamHeaders: request.headers as Record<string, unknown>,
-            });
-            const upstreamPath = (
-              isCompactRequest && endpoint === 'responses'
-                ? `${endpointRequest.path}/compact`
-                : endpointRequest.path
-            );
-            return {
-              endpoint,
-              path: upstreamPath,
-              headers: endpointRequest.headers,
-              body: endpointRequest.body as Record<string, unknown>,
-            };
-        },
-        tryRecover: async (ctx) => {
-            if (openAiResponsesTransformer.compatibility.shouldRetry({
-              endpoint: ctx.request.endpoint,
-              status: ctx.response.status,
-              rawErrText: ctx.rawErrText,
-            })) {
-              const compatibilityBodies = openAiResponsesTransformer.compatibility.buildRetryBodies(ctx.request.body);
-              const compatibilityHeaders = openAiResponsesTransformer.compatibility.buildRetryHeaders(
-                ctx.request.headers,
-                isStream,
-              );
-
-              for (const compatibilityHeadersCandidate of compatibilityHeaders) {
-                for (const compatibilityBody of compatibilityBodies) {
-                  const compatibilityResponse = await fetch(
-                    ctx.targetUrl,
-                    withSiteRecordProxyRequestInit(selected.site, {
-                      method: 'POST',
-                      headers: compatibilityHeadersCandidate,
-                      body: JSON.stringify(compatibilityBody),
-                    }),
-                  );
-                  if (compatibilityResponse.ok) {
-                    return {
-                      upstream: compatibilityResponse,
-                      upstreamPath: ctx.request.path,
-                    };
-                  }
-
-                  ctx.request = {
-                    ...ctx.request,
-                    headers: compatibilityHeadersCandidate,
-                    body: compatibilityBody,
-                  };
-                  ctx.response = compatibilityResponse;
-                  ctx.rawErrText = await compatibilityResponse.text().catch(() => 'unknown error');
-                }
-              }
-            }
-
-            if (!isUnsupportedMediaTypeError(ctx.response.status, ctx.rawErrText)) {
-              return null;
-            }
-
-            const minimalHeaders = buildMinimalJsonHeadersForCompatibility({
-              headers: ctx.request.headers,
-              endpoint: ctx.request.endpoint,
-              stream: isStream,
-            });
-            const minimalResponse = await fetch(
-              ctx.targetUrl,
-              withSiteRecordProxyRequestInit(selected.site, {
-                method: 'POST',
-                headers: minimalHeaders,
-                body: JSON.stringify(ctx.request.body),
-              }),
-            );
-            if (minimalResponse.ok) {
-              return {
-                upstream: minimalResponse,
-                upstreamPath: ctx.request.path,
-              };
-            }
-
-            ctx.request = {
-              ...ctx.request,
-              headers: minimalHeaders,
-            };
-            ctx.response = minimalResponse;
-            ctx.rawErrText = await minimalResponse.text().catch(() => 'unknown error');
-            return null;
-          },
-          shouldDowngrade: (ctx) => (
-            !requiresNativeResponsesFileUrl && (
-              ctx.response.status >= 500
-              || isEndpointDowngradeError(ctx.response.status, ctx.rawErrText)
-              || openAiResponsesTransformer.compatibility.shouldDowngradeChatToMessages(
-                ctx.request.path,
-                ctx.response.status,
-                ctx.rawErrText,
-              )
-            )
-          ),
+          buildRequest: (endpoint) => buildEndpointRequest(endpoint),
+          tryRecover: endpointStrategy.tryRecover,
+          shouldDowngrade: endpointStrategy.shouldDowngrade,
           onDowngrade: (ctx) => {
             logProxy(
               selected,
@@ -374,6 +275,13 @@ export async function responsesProxyRoute(app: FastifyInstance) {
               ctx.errText,
               retryCount,
               downstreamPath,
+              0,
+              0,
+              0,
+              0,
+              null,
+              null,
+              clientContext,
             );
           },
         });
@@ -382,7 +290,23 @@ export async function responsesProxyRoute(app: FastifyInstance) {
           const status = endpointResult.status || 502;
           const errText = endpointResult.errText || 'unknown error';
           tokenRouter.recordFailure(selected.channel.id);
-          logProxy(selected, requestedModel, 'failed', status, Date.now() - startTime, errText, retryCount, downstreamPath);
+          logProxy(
+            selected,
+            requestedModel,
+            'failed',
+            status,
+            Date.now() - startTime,
+            errText,
+            retryCount,
+            downstreamPath,
+            0,
+            0,
+            0,
+            0,
+            null,
+            null,
+            clientContext,
+          );
 
           if (isTokenExpiredError({ status, message: errText })) {
             await reportTokenExpired({
@@ -416,12 +340,6 @@ export async function responsesProxyRoute(app: FastifyInstance) {
           reply.raw.setHeader('X-Accel-Buffering', 'no');
 
           const reader = upstream.body?.getReader();
-          if (!reader) {
-            reply.raw.end();
-            return;
-          }
-
-          const decoder = new TextDecoder();
           let parsedUsage: UsageSummary = {
             promptTokens: 0,
             completionTokens: 0,
@@ -430,102 +348,24 @@ export async function responsesProxyRoute(app: FastifyInstance) {
             cacheCreationTokens: 0,
             promptTokensIncludeCache: null,
           };
-          let sseBuffer = '';
-
-          const passthroughResponsesStream = successfulUpstreamPath === '/v1/responses';
-          const streamContext = openAiResponsesTransformer.createStreamContext(modelName);
-          const responsesState = openAiResponsesTransformer.aggregator.createState(modelName);
-
           const writeLines = (lines: string[]) => {
             for (const line of lines) reply.raw.write(line);
           };
-
-          const consumeSseBuffer = (incoming: string): string => {
-             const pulled = openAiResponsesTransformer.pullSseEvents(incoming);
-            for (const eventBlock of pulled.events) {
-              if (eventBlock.data === '[DONE]') {
-                if (passthroughResponsesStream) {
-                  reply.raw.write('data: [DONE]\n\n');
-                } else if (!responsesState.completed) {
-                  writeLines(openAiResponsesTransformer.aggregator.complete(responsesState, streamContext, parsedUsage));
-                }
-                continue;
+          const streamSession = openAiResponsesTransformer.proxyStream.createSession({
+            modelName,
+            successfulUpstreamPath,
+            getUsage: () => parsedUsage,
+            onParsedPayload: (payload) => {
+              if (payload && typeof payload === 'object') {
+                parsedUsage = mergeProxyUsage(parsedUsage, parseProxyUsage(payload));
               }
-
-              let parsedPayload: unknown = null;
-              try {
-                parsedPayload = JSON.parse(eventBlock.data);
-              } catch {
-                parsedPayload = null;
-              }
-
-              if (parsedPayload && typeof parsedPayload === 'object') {
-                parsedUsage = mergeProxyUsage(parsedUsage, parseProxyUsage(parsedPayload));
-              }
-
-              if (passthroughResponsesStream) {
-                const eventName = eventBlock.event ? `event: ${eventBlock.event}\n` : '';
-                reply.raw.write(`${eventName}data: ${eventBlock.data}\n\n`);
-                continue;
-              }
-
-              const payloadType = (isRecord(parsedPayload) && typeof parsedPayload.type === 'string')
-                ? parsedPayload.type
-                : '';
-              const isFailureEvent = (
-                eventBlock.event === 'error'
-                || eventBlock.event === 'response.failed'
-                || payloadType === 'error'
-                || payloadType === 'response.failed'
-              );
-              if (isFailureEvent) {
-                writeLines(openAiResponsesTransformer.aggregator.fail(responsesState, streamContext, parsedUsage, parsedPayload));
-                continue;
-              }
-
-              if (parsedPayload && typeof parsedPayload === 'object') {
-                const normalizedEvent = openAiResponsesTransformer.transformStreamEvent(parsedPayload, streamContext, modelName);
-                writeLines(openAiResponsesTransformer.aggregator.serialize({
-                  state: responsesState,
-                  streamContext,
-                  event: normalizedEvent,
-                  usage: parsedUsage,
-                }));
-                continue;
-              }
-
-              writeLines(openAiResponsesTransformer.aggregator.serialize({
-                state: responsesState,
-                streamContext,
-                event: { contentDelta: eventBlock.data },
-                usage: parsedUsage,
-              }));
-            }
-
-            return pulled.rest;
-          };
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (!value) continue;
-
-              sseBuffer += decoder.decode(value, { stream: true });
-              sseBuffer = consumeSseBuffer(sseBuffer);
-            }
-
-            sseBuffer += decoder.decode();
-            if (sseBuffer.trim().length > 0) {
-              sseBuffer = consumeSseBuffer(`${sseBuffer}\n\n`);
-            }
-          } finally {
-            reader.releaseLock();
-            if (!passthroughResponsesStream && !responsesState.completed) {
-              writeLines(openAiResponsesTransformer.aggregator.complete(responsesState, streamContext, parsedUsage));
-            }
-            reply.raw.end();
-          }
+            },
+            writeLines,
+            writeRaw: (chunk) => {
+              reply.raw.write(chunk);
+            },
+          });
+          await streamSession.run(reader, reply.raw);
 
           const latency = Date.now() - startTime;
           const resolvedUsage = await resolveProxyUsageWithSelfLogFallback({
@@ -612,7 +452,23 @@ export async function responsesProxyRoute(app: FastifyInstance) {
         return reply.send(downstreamData);
       } catch (err: any) {
         tokenRouter.recordFailure(selected.channel.id);
-        logProxy(selected, requestedModel, 'failed', 0, Date.now() - startTime, err.message, retryCount, downstreamPath);
+        logProxy(
+          selected,
+          requestedModel,
+          'failed',
+          0,
+          Date.now() - startTime,
+          err.message,
+          retryCount,
+          downstreamPath,
+          0,
+          0,
+          0,
+          0,
+          null,
+          null,
+          clientContext,
+        );
         if (retryCount < MAX_RETRIES) {
           retryCount += 1;
           continue;
@@ -649,10 +505,16 @@ async function logProxy(
   estimatedCost = 0,
   billingDetails: unknown = null,
   upstreamPath: string | null = null,
+  clientContext: DownstreamClientContext | null = null,
 ) {
   try {
     const createdAt = formatUtcSqlDateTime(new Date());
     const normalizedErrorMessage = composeProxyLogMessage({
+      clientKind: clientContext?.clientKind && clientContext.clientKind !== 'generic'
+        ? clientContext.clientKind
+        : null,
+      sessionId: clientContext?.sessionId || null,
+      traceHint: clientContext?.traceHint || null,
       downstreamPath,
       upstreamPath,
       errorMessage,

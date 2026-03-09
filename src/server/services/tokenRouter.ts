@@ -32,8 +32,25 @@ type FailureAwareChannel = {
   lastFailAt?: string | null;
 };
 
-const RECENT_FAILURE_AVOID_SEC = 10 * 60;
+const FAILURE_BACKOFF_BASE_SEC = 15;
 const MIN_EFFECTIVE_UNIT_COST = 1e-6;
+
+function fibonacciNumber(index: number): number {
+  if (index <= 2) return 1;
+  let prev = 1;
+  let current = 1;
+  for (let i = 3; i <= index; i += 1) {
+    const next = prev + current;
+    prev = current;
+    current = next;
+  }
+  return current;
+}
+
+function resolveFailureBackoffSec(failCount?: number | null): number {
+  const normalizedFailCount = Math.max(1, Math.trunc(failCount ?? 0));
+  return FAILURE_BACKOFF_BASE_SEC * fibonacciNumber(normalizedFailCount);
+}
 
 type RouteRow = typeof schema.tokenRoutes.$inferSelect;
 type ChannelRow = typeof schema.routeChannels.$inferSelect;
@@ -133,7 +150,7 @@ function isSiteDisabled(status?: string | null): boolean {
 export function isChannelRecentlyFailed(
   channel: FailureAwareChannel,
   nowMs = Date.now(),
-  avoidSec = RECENT_FAILURE_AVOID_SEC,
+  avoidSec = resolveFailureBackoffSec(channel.failCount),
 ): boolean {
   if (avoidSec <= 0) return false;
   if ((channel.failCount ?? 0) <= 0) return false;
@@ -148,7 +165,7 @@ export function isChannelRecentlyFailed(
 export function filterRecentlyFailedCandidates<T extends { channel: FailureAwareChannel }>(
   candidates: T[],
   nowMs = Date.now(),
-  avoidSec = RECENT_FAILURE_AVOID_SEC,
+  avoidSec?: number,
 ): T[] {
   if (candidates.length <= 1) return candidates;
   if (avoidSec <= 0) return candidates;
@@ -424,7 +441,6 @@ export class TokenRouter {
       const candidates = filterRecentlyFailedCandidates(
         layers.get(priority)!,
         nowMs,
-        RECENT_FAILURE_AVOID_SEC,
       );
       const selected = this.weightedRandomSelect(
         candidates,
@@ -497,7 +513,6 @@ export class TokenRouter {
       const candidates = filterRecentlyFailedCandidates(
         layers.get(priority)!,
         nowMs,
-        RECENT_FAILURE_AVOID_SEC,
       );
       const selected = this.weightedRandomSelect(
         candidates,
@@ -631,7 +646,7 @@ export class TokenRouter {
         nowIso,
       });
 
-      const recentlyFailed = isChannelRecentlyFailed(row.channel, nowMs, RECENT_FAILURE_AVOID_SEC);
+      const recentlyFailed = isChannelRecentlyFailed(row.channel, nowMs);
       const eligible = reasonParts.length === 0;
       const candidate: RouteDecisionCandidate = {
         channelId: row.channel.id,
@@ -678,14 +693,14 @@ export class TokenRouter {
       const rawLayer = availableByPriority.get(priority) ?? [];
       if (rawLayer.length === 0) continue;
 
-      const filteredLayer = filterRecentlyFailedCandidates(rawLayer, nowMs, RECENT_FAILURE_AVOID_SEC);
+      const filteredLayer = filterRecentlyFailedCandidates(rawLayer, nowMs);
       const avoided = rawLayer.filter((row) => !filteredLayer.some((item) => item.channel.id === row.channel.id));
       if (avoided.length > 0) {
         for (const row of avoided) {
           const target = candidateMap.get(row.channel.id);
           if (!target) continue;
           target.avoidedByRecentFailure = true;
-          target.reason = `最近失败，优先避让（${RECENT_FAILURE_AVOID_SEC / 60} 分钟窗口）`;
+          target.reason = `最近失败，优先避让（${resolveFailureBackoffSec(row.channel.failCount)} 秒窗口）`;
         }
       }
 
@@ -833,8 +848,7 @@ export class TokenRouter {
     const ch = await db.select().from(schema.routeChannels).where(eq(schema.routeChannels.id, channelId)).get();
     if (!ch) return;
     const failCount = (ch.failCount ?? 0) + 1;
-    // Exponential backoff cooldown: 30s, 60s, 120s, 240s, max 5min
-    const cooldownSec = Math.min(30 * Math.pow(2, failCount - 1), 300);
+    const cooldownSec = resolveFailureBackoffSec(failCount);
     const cooldownUntil = new Date(Date.now() + cooldownSec * 1000).toISOString();
     const nowIso = new Date().toISOString();
     await db.update(schema.routeChannels).set({

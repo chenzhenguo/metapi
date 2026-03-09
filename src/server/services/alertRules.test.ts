@@ -10,13 +10,28 @@ describe('alertRules', () => {
 
   it('detects token expiration by status or message', () => {
     expect(isTokenExpiredError({ status: 401, message: 'Unauthorized' })).toBe(true);
-    expect(isTokenExpiredError({ status: 403, message: 'Forbidden' })).toBe(true);
+    expect(isTokenExpiredError({ status: 403, message: 'Forbidden' })).toBe(false);
+    expect(isTokenExpiredError({ message: 'HTTP 401: access token required' })).toBe(true);
     expect(isTokenExpiredError({ message: 'jwt expired' })).toBe(true);
     expect(isTokenExpiredError({ message: 'token invalid' })).toBe(true);
     expect(isTokenExpiredError({ message: 'invalid access token' })).toBe(true);
     expect(isTokenExpiredError({ message: 'Token 无效' })).toBe(true);
     expect(isTokenExpiredError({ message: '无权进行此操作，未登录且未提供 access token' })).toBe(false);
     expect(isTokenExpiredError({ status: 500, message: 'upstream error' })).toBe(false);
+  });
+
+  it('does not treat endpoint dispatch denial as token expiration', () => {
+    expect(isTokenExpiredError({
+      status: 403,
+      message: 'This group does not allow /v1/messages dispatch',
+    })).toBe(false);
+    expect(isTokenExpiredError({
+      status: 403,
+      message: 'dispatch denied for /v1/responses',
+    })).toBe(false);
+    expect(isTokenExpiredError({
+      message: 'unauthorized',
+    })).toBe(false);
   });
 
   it('appends rebind hint for invalid access token messages', () => {

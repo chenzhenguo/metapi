@@ -201,6 +201,117 @@ describe('chat proxy stream behavior', () => {
     expect(response.body).toContain('data: [DONE]');
   });
 
+  it('normalizes inline think tags into reasoning_content for /v1/chat/completions streams', async () => {
+    const encoder = new TextEncoder();
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think","model":"upstream-gpt","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think","model":"upstream-gpt","choices":[{"delta":{"content":"<think>plan quietly</think>"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think","model":"upstream-gpt","choices":[{"delta":{"content":"visible answer"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think","model":"upstream-gpt","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValue(new Response(upstreamBody, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'gpt-4o-mini',
+        stream: true,
+        messages: [{ role: 'user', content: 'show your work and answer' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"reasoning_content":"plan quietly"');
+    expect(response.body).toContain('"content":"visible answer"');
+    expect(response.body).not.toContain('<think>');
+    expect(response.body).not.toContain('</think>');
+    expect(response.body).toContain('data: [DONE]');
+  });
+
+  it('tracks split inline think tags across SSE chunks for /v1/chat/completions streams', async () => {
+    const encoder = new TextEncoder();
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"content":"<thin"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"content":"k>plan "},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"content":"quietly</th"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"content":"ink>visible "},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-think-split","model":"upstream-gpt","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValue(new Response(upstreamBody, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'gpt-4o-mini',
+        stream: true,
+        messages: [{ role: 'user', content: 'show your work and answer' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"reasoning_content":"plan "');
+    expect(response.body).toContain('"reasoning_content":"quietly"');
+    expect(response.body).toContain('"content":"visible "');
+    expect(response.body).toContain('"content":"answer"');
+    expect(response.body).not.toContain('<think>');
+    expect(response.body).not.toContain('</think>');
+    expect(response.body).not.toContain('<thin');
+    expect(response.body).not.toContain('quietly</th');
+    expect(response.body).not.toContain('ink>visible');
+    expect(response.body).toContain('data: [DONE]');
+  });
+
+  it('synthesizes a terminal finish chunk when /v1/chat/completions upstream EOFs after visible content', async () => {
+    const encoder = new TextEncoder();
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-eof","model":"upstream-gpt","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-eof","model":"upstream-gpt","choices":[{"delta":{"content":"tail before eof"},"finish_reason":null}]}\n\n'));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValue(new Response(upstreamBody, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'gpt-4o-mini',
+        stream: true,
+        messages: [{ role: 'user', content: 'finish cleanly' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('tail before eof');
+    expect(response.body).toContain('"finish_reason":"stop"');
+    expect(response.body).toContain('data: [DONE]');
+  });
+
   it('normalizes anthropic-style SSE events into OpenAI chunks for clients like OpenWebUI', async () => {
     const encoder = new TextEncoder();
     const upstreamBody = new ReadableStream<Uint8Array>({
@@ -484,6 +595,40 @@ describe('chat proxy stream behavior', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('event: message_stop');
     expect(response.body).not.toContain('event: ping');
+  });
+
+  it('does not synthesize message_stop when anthropic upstream EOFs before terminal event on /v1/messages', async () => {
+    const encoder = new TextEncoder();
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_eof_early","model":"claude-opus-4-6"}}\n\n'));
+        controller.enqueue(encoder.encode('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'));
+        controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n'));
+        controller.close();
+      },
+    });
+
+    fetchMock.mockResolvedValue(new Response(upstreamBody, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-opus-4-6',
+        stream: true,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('event: message_start');
+    expect(response.body).toContain('event: content_block_delta');
+    expect(response.body).not.toContain('event: message_stop');
+    expect(response.body).not.toContain('"stop_reason":"end_turn"');
   });
 
   it('normalizes Claude thinking adaptive type for legacy upstreams on /v1/messages', async () => {
@@ -839,7 +984,7 @@ describe('chat proxy stream behavior', () => {
     expect(body.output_text).toContain('ok from messages fallback');
   });
 
-  it('passes through /v1/responses SSE payloads', async () => {
+  it('canonicalizes native /v1/responses SSE payloads instead of passing them through raw', async () => {
     const encoder = new TextEncoder();
     const upstreamBody = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -867,6 +1012,9 @@ describe('chat proxy stream behavior', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/event-stream');
     expect(response.body).toContain('response.output_text.delta');
+    expect(response.body).toContain('response.output_text.done');
+    expect(response.body).toContain('response.output_item.done');
+    expect(response.body).toContain('response.completed');
     expect(response.body).toContain('[DONE]');
   });
 
@@ -1524,7 +1672,7 @@ describe('chat proxy stream behavior', () => {
     expect(deltaMatches.length).toBe(1);
     const textMatches = response.body.match(/I'm Claude, an AI assistant made by Anthropic\./g) || [];
     expect(textMatches.length).toBeGreaterThan(0);
-    expect(textMatches.length).toBeLessThanOrEqual(4);
+    expect(textMatches.length).toBeLessThanOrEqual(6);
   });
 
   it('deduplicates overlapping text windows when /v1/responses is converted from /v1/messages stream', async () => {

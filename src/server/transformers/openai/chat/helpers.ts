@@ -8,6 +8,7 @@ import type {
   OpenAiChatUsageDetails,
 } from './model.js';
 import { fromTransformerMetadataRecord } from '../../shared/normalized.js';
+import { extractInlineThinkTags } from '../../shared/thinkTagParser.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -98,15 +99,23 @@ function extractTextPart(value: unknown): string {
   return '';
 }
 
+function joinNonEmpty(parts: string[]): string {
+  return parts.map((item) => item.trim()).filter((item) => item.length > 0).join('\n\n');
+}
+
 function extractTextAndReasoning(value: unknown): { content: string; reasoning: string } {
-  if (typeof value === 'string') return { content: value, reasoning: '' };
+  if (typeof value === 'string') return extractInlineThinkTags(value);
   if (Array.isArray(value)) {
     const contentParts: string[] = [];
     const reasoningParts: string[] = [];
 
     for (const item of value) {
       if (!isRecord(item)) {
-        if (typeof item === 'string') contentParts.push(item);
+        if (typeof item === 'string') {
+          const parsed = extractInlineThinkTags(item);
+          if (parsed.content) contentParts.push(parsed.content);
+          if (parsed.reasoning) reasoningParts.push(parsed.reasoning);
+        }
         continue;
       }
 
@@ -119,8 +128,9 @@ function extractTextAndReasoning(value: unknown): { content: string; reasoning: 
         reasoningParts.push(item.reasoning);
         continue;
       }
-      const text = extractTextPart(item);
-      if (text) contentParts.push(text);
+      const parsed = extractInlineThinkTags(extractTextPart(item));
+      if (parsed.content) contentParts.push(parsed.content);
+      if (parsed.reasoning) reasoningParts.push(parsed.reasoning);
     }
 
     return {
@@ -130,13 +140,14 @@ function extractTextAndReasoning(value: unknown): { content: string; reasoning: 
   }
 
   if (!isRecord(value)) return { content: '', reasoning: '' };
+  const parsed = extractInlineThinkTags(extractTextPart(value.content ?? value));
   return {
-    content: extractTextPart(value.content ?? value),
-    reasoning: typeof value.reasoning_content === 'string'
-      ? value.reasoning_content
-      : typeof value.reasoning === 'string'
-        ? value.reasoning
-        : '',
+    content: parsed.content,
+    reasoning: joinNonEmpty([
+      typeof value.reasoning_content === 'string' ? value.reasoning_content : '',
+      typeof value.reasoning === 'string' ? value.reasoning : '',
+      parsed.reasoning,
+    ]),
   };
 }
 

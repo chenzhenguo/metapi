@@ -25,9 +25,23 @@ describe('proxy route architecture boundaries', () => {
     expect(source).not.toContain('const promoteResponsesCandidate =');
     expect(source).not.toContain('shouldRetryClaudeMessagesWithNormalizedBody(');
     expect(source).not.toContain('buildOpenAiSyntheticFinalStream(');
-    expect(source).toContain('anthropicMessagesTransformer.consumeSseEventBlock(');
-    expect(source).toContain('anthropicMessagesTransformer.serializeUpstreamFinalAsStream(');
-    expect(source).toContain('openAiChatTransformer.serializeUpstreamFinalAsStream(');
+    expect(source).not.toContain('anthropicMessagesTransformer.consumeSseEventBlock(');
+    expect(source).not.toContain('anthropicMessagesTransformer.serializeUpstreamFinalAsStream(');
+    expect(source).not.toContain('openAiChatTransformer.serializeUpstreamFinalAsStream(');
+    expect(source).toContain('openAiChatTransformer.proxyStream.createSession(');
+    expect(source).toContain('streamSession.consumeUpstreamFinalPayload(');
+    expect(source).toContain('streamSession.run(');
+  });
+
+  it('keeps chat endpoint retry and downgrade strategy out of the route', () => {
+    const source = readSource('./chat.ts');
+    expect(source).toContain('downstreamTransformer.compatibility.createEndpointStrategy(');
+    expect(source).not.toContain('anthropicMessagesTransformer.compatibility.shouldRetryNormalizedBody(');
+    expect(source).not.toContain('buildMinimalJsonHeadersForCompatibility(');
+    expect(source).not.toContain('promoteResponsesCandidateAfterLegacyChatError(');
+    expect(source).not.toContain('isEndpointDowngradeError(');
+    expect(source).not.toContain('isEndpointDispatchDeniedError(');
+    expect(source).not.toContain('isUnsupportedMediaTypeError(');
   });
 
   it('keeps responses protocol assembly out of responses route', () => {
@@ -44,14 +58,25 @@ describe('proxy route architecture boundaries', () => {
     expect(source).not.toContain('function shouldDowngradeFromChatToMessagesForResponses(');
     expect(source).not.toContain('function normalizeText(');
     expect(source).toContain('openAiResponsesTransformer.inbound.toOpenAiBody(');
-    expect(source).toContain('openAiResponsesTransformer.compatibility.buildRetryBodies(');
-    expect(source).toContain('openAiResponsesTransformer.compatibility.buildRetryHeaders(');
-    expect(source).toContain('openAiResponsesTransformer.compatibility.shouldRetry(');
-    expect(source).toContain('openAiResponsesTransformer.compatibility.shouldDowngradeChatToMessages(');
-    expect(source).toContain('openAiResponsesTransformer.aggregator.createState(');
-    expect(source).toContain('openAiResponsesTransformer.aggregator.serialize(');
-    expect(source).toContain('openAiResponsesTransformer.aggregator.complete(');
+    expect(source).toContain('openAiResponsesTransformer.compatibility.createEndpointStrategy(');
+    expect(source).not.toContain('openAiResponsesTransformer.aggregator.createState(');
+    expect(source).not.toContain('openAiResponsesTransformer.aggregator.serialize(');
+    expect(source).not.toContain('openAiResponsesTransformer.aggregator.complete(');
+    expect(source).toContain('openAiResponsesTransformer.proxyStream.createSession(');
+    expect(source).toContain('streamSession.run(');
     expect(source).toContain('openAiResponsesTransformer.outbound.serializeFinal(');
+  });
+
+  it('keeps responses endpoint retry and downgrade strategy out of the route', () => {
+    const source = readSource('./responses.ts');
+    expect(source).toContain('openAiResponsesTransformer.compatibility.createEndpointStrategy(');
+    expect(source).not.toContain('openAiResponsesTransformer.compatibility.shouldRetry(');
+    expect(source).not.toContain('openAiResponsesTransformer.compatibility.buildRetryBodies(');
+    expect(source).not.toContain('openAiResponsesTransformer.compatibility.buildRetryHeaders(');
+    expect(source).not.toContain('openAiResponsesTransformer.compatibility.shouldDowngradeChatToMessages(');
+    expect(source).not.toContain('buildMinimalJsonHeadersForCompatibility(');
+    expect(source).not.toContain('isEndpointDowngradeError(');
+    expect(source).not.toContain('isUnsupportedMediaTypeError(');
   });
 
   it('removes normalizeContentText from upstream endpoint routing', () => {
@@ -70,6 +95,26 @@ describe('proxy route architecture boundaries', () => {
     expect(source).not.toContain('stream.parseSsePayloads(');
     expect(source).toContain('stream.consumeUpstreamSseBuffer(');
     expect(source).toContain('stream.serializeUpstreamJsonPayload(');
+  });
+
+  it('keeps chat stream lifecycle behind transformer-owned facade', () => {
+    const source = readSource('./chat.ts');
+    expect(source).not.toContain("from '../../transformers/shared/protocolLifecycle.js'");
+    expect(source).not.toContain('createProxyStreamLifecycle');
+    expect(source).not.toContain('let shouldTerminateEarly = false;');
+    expect(source).not.toContain('const consumeSseBuffer = (incoming: string): string => {');
+    expect(source).not.toContain('writeDone();');
+    expect(source).toContain('openAiChatTransformer.proxyStream.createSession(');
+  });
+
+  it('keeps responses stream lifecycle behind transformer-owned facade', () => {
+    const source = readSource('./responses.ts');
+    expect(source).not.toContain("from '../../transformers/shared/protocolLifecycle.js'");
+    expect(source).not.toContain('createProxyStreamLifecycle');
+    expect(source).not.toContain('const consumeSseBuffer = (incoming: string): string => {');
+    expect(source).not.toContain('openAiResponsesTransformer.aggregator.complete(');
+    expect(source).not.toContain('reply.raw.end();');
+    expect(source).toContain('openAiResponsesTransformer.proxyStream.createSession(');
   });
 });
 

@@ -13,22 +13,22 @@ hero:
       text: 10 分钟快速上手
       link: /getting-started
     - theme: alt
+      text: 上游接入
+      link: /upstream-integration
+    - theme: alt
       text: 常见问题 FAQ
       link: /faq
-    - theme: alt
-      text: 文档维护与贡献
-      link: /README
 
 features:
   - title: 快速上手
     details: 从部署到第一条请求，按步骤完成最小可用环境搭建。
     link: /getting-started
+  - title: 上游接入
+    details: 按当前代码支持的平台类型，快速判断该选什么平台、先走哪个连接分段。
+    link: /upstream-integration
   - title: 问题排查
     details: 汇总高频报错、根因定位和标准修复路径，降低重复沟通成本。
     link: /faq
-  - title: 运维与配置
-    details: 覆盖部署、配置、监控、备份、升级回滚等生产场景。
-    link: /operations
 ---
 
 ## 项目架构
@@ -289,6 +289,7 @@ onBeforeUnmount(() => {
 ## 从这里开始
 
 - 初次部署或首次接入：从 [快速上手](/getting-started) 开始，先跑通最小可用链路。
+- 不确定上游平台该怎么选：先看 [上游接入](/upstream-integration)，再决定走 `账号管理` 还是 `API Key管理`。
 - 准备上线或升级回滚：查看 [部署指南](/deployment) 与 [运维手册](/operations)。
 - 需要补齐环境变量或路由参数：直接查 [配置说明](/configuration)。
 - 正在处理客户端或第三方工具接入：优先看 [客户端接入](/client-integration)。

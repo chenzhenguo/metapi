@@ -6,9 +6,25 @@ export function isCloudflareChallenge(message?: string | null): boolean {
 
 const SESSION_TOKEN_REBIND_HINT = '请在中转站重新生成系统访问令牌后重新绑定账号';
 
+function isEndpointDispatchDeniedMessage(message?: string | null): boolean {
+  if (!message) return false;
+  const text = message.toLowerCase();
+  return (
+    /does\s+not\s+allow\s+\/v1\/[a-z0-9/_:-]+\s+dispatch/i.test(message)
+    || text.includes('dispatch denied')
+  );
+}
+
+function containsHttpStatus(message: string | null | undefined, status: number): boolean {
+  if (!message) return false;
+  return new RegExp(`(?:^|\\b)(?:http\\s*)?${status}(?:\\b|:)`, 'i').test(message);
+}
+
 export function isTokenExpiredError(input: { status?: number; message?: string | null }): boolean {
-  if (input.status === 401 || input.status === 403) return true;
+  const rawMessage = input.message || '';
   const text = (input.message || '').toLowerCase();
+  if (isEndpointDispatchDeniedMessage(rawMessage)) return false;
+  if (input.status === 401 || containsHttpStatus(rawMessage, 401)) return true;
   if (!text) return false;
 
   // NewAPI-like sites may return this when session context is missing for an action,
@@ -24,9 +40,7 @@ export function isTokenExpiredError(input: { status?: number; message?: string |
     text.includes('token expired') ||
     (tokenPhrase && (hasInvalid || hasExpired)) ||
     /invalid\s+access\s+token/.test(text) ||
-    /access\s+token\s+is\s+invalid/.test(text) ||
-    text.includes('unauthorized') ||
-    text.includes('forbidden')
+    /access\s+token\s+is\s+invalid/.test(text)
   );
 }
 

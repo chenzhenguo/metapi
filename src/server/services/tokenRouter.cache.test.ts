@@ -100,4 +100,72 @@ describe('TokenRouter runtime cache', () => {
     const refreshedSelection = await router.selectChannel('gpt-4o-mini');
     expect(refreshedSelection).toBeNull();
   });
+
+  it('uses fibonacci-style cooldown across repeated failures', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'cooldown-site',
+      url: 'https://cooldown-site.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning().get();
+
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'cooldown-user',
+      accessToken: 'cooldown-access-token',
+      apiToken: 'cooldown-api-token',
+      status: 'active',
+    }).returning().get();
+
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id,
+      name: 'cooldown-token',
+      token: 'sk-cooldown-token',
+      enabled: true,
+      isDefault: true,
+    }).returning().get();
+
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-4o-mini',
+      enabled: true,
+    }).returning().get();
+
+    const channel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: account.id,
+      tokenId: token.id,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).returning().get();
+
+    const router = new TokenRouter();
+
+    const firstStartedAt = Date.now();
+    await router.recordFailure(channel.id);
+    const firstRecord = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, channel.id))
+      .get();
+    const firstCooldownMs = Date.parse(String(firstRecord?.cooldownUntil || '')) - firstStartedAt;
+    expect(firstCooldownMs).toBeGreaterThanOrEqual(10_000);
+    expect(firstCooldownMs).toBeLessThanOrEqual(20_000);
+
+    const secondStartedAt = Date.now();
+    await router.recordFailure(channel.id);
+    const secondRecord = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, channel.id))
+      .get();
+    const secondCooldownMs = Date.parse(String(secondRecord?.cooldownUntil || '')) - secondStartedAt;
+    expect(secondCooldownMs).toBeGreaterThanOrEqual(10_000);
+    expect(secondCooldownMs).toBeLessThanOrEqual(20_000);
+
+    const thirdStartedAt = Date.now();
+    await router.recordFailure(channel.id);
+    const thirdRecord = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, channel.id))
+      .get();
+    const thirdCooldownMs = Date.parse(String(thirdRecord?.cooldownUntil || '')) - thirdStartedAt;
+    expect(thirdCooldownMs).toBeGreaterThanOrEqual(25_000);
+    expect(thirdCooldownMs).toBeLessThanOrEqual(35_000);
+  });
 });

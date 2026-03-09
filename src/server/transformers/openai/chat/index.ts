@@ -1,10 +1,15 @@
 import { type NormalizedFinalResponse, type NormalizedStreamEvent, type StreamTransformContext } from '../../shared/normalized.js';
+import { createChatEndpointStrategy } from '../../shared/chatEndpointStrategy.js';
 import { openAiChatInbound } from './inbound.js';
 import { openAiChatOutbound } from './outbound.js';
+import { createChatProxyStreamSession } from './proxyStream.js';
 import { openAiChatStream } from './stream.js';
 import { openAiChatUsage } from './usage.js';
 import { createOpenAiChatAggregateState, applyOpenAiChatStreamEvent, finalizeOpenAiChatAggregate } from './aggregator.js';
-import type { OpenAiChatParsedRequest as OpenAiChatParsedRequestModel } from './model.js';
+import type {
+  OpenAiChatParsedRequest as OpenAiChatParsedRequestModel,
+  OpenAiChatRequestEnvelope as OpenAiChatRequestEnvelopeModel,
+} from './model.js';
 
 export const openAiChatTransformer = {
   protocol: 'openai/chat' as const,
@@ -12,10 +17,16 @@ export const openAiChatTransformer = {
   outbound: openAiChatOutbound,
   stream: openAiChatStream,
   usage: openAiChatUsage,
+  compatibility: {
+    createEndpointStrategy: createChatEndpointStrategy,
+  },
   aggregator: {
     createState: createOpenAiChatAggregateState,
     applyEvent: applyOpenAiChatStreamEvent,
     finalize: finalizeOpenAiChatAggregate,
+  },
+  proxyStream: {
+    createSession: createChatProxyStreamSession,
   },
   transformRequest(body: unknown): ReturnType<typeof openAiChatInbound.parse> {
     return openAiChatInbound.parse(body);
@@ -72,3 +83,4 @@ export const openAiChatTransformer = {
 
 export type OpenAiChatTransformer = typeof openAiChatTransformer;
 export type OpenAiChatParsedRequest = OpenAiChatParsedRequestModel;
+export type OpenAiChatRequestEnvelope = OpenAiChatRequestEnvelopeModel;

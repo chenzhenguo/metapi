@@ -1252,6 +1252,7 @@ export default function TokenRoutes() {
   };
 
   const handleCreateTokenForMissingAccount = (accountId: number, modelName: string) => {
+    if (!Number.isFinite(accountId) || accountId <= 0) return;
     const params = new URLSearchParams();
     params.set('create', '1');
     params.set('accountId', String(accountId));
@@ -1897,6 +1898,7 @@ export default function TokenRoutes() {
                 const siteMap = new Map<string, MissingTokenRouteSiteActionItem>();
                 for (const hint of missingTokenHints) {
                   for (const account of hint.accounts) {
+                    if (!Number.isFinite(account.accountId) || account.accountId <= 0) continue;
                     const siteName = (account.siteName || '').trim() || `site-${account.siteId || 'unknown'}`;
                     const key = `${account.siteId || 0}::${siteName.toLowerCase()}`;
                     const accountLabel = account.username || `account-${account.accountId}`;

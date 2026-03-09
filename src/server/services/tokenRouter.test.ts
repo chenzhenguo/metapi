@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterRecentlyFailedCandidates } from './tokenRouter.js';
+import { filterRecentlyFailedCandidates, isChannelRecentlyFailed } from './tokenRouter.js';
 
 type Candidate = {
   channel: {
@@ -10,6 +10,26 @@ type Candidate = {
 };
 
 describe('filterRecentlyFailedCandidates', () => {
+  it('uses a short default recent-failure window', () => {
+    const nowMs = Date.now();
+    expect(isChannelRecentlyFailed({
+      failCount: 1,
+      lastFailAt: new Date(nowMs - 20 * 1000).toISOString(),
+    }, nowMs)).toBe(false);
+  });
+
+  it('expands the avoidance window with fibonacci-style backoff', () => {
+    const nowMs = Date.now();
+    expect(isChannelRecentlyFailed({
+      failCount: 4,
+      lastFailAt: new Date(nowMs - 40 * 1000).toISOString(),
+    }, nowMs)).toBe(true);
+    expect(isChannelRecentlyFailed({
+      failCount: 4,
+      lastFailAt: new Date(nowMs - 50 * 1000).toISOString(),
+    }, nowMs)).toBe(false);
+  });
+
   it('prefers healthy channels when at least one healthy channel exists', () => {
     const nowMs = Date.now();
     const candidates: Candidate[] = [

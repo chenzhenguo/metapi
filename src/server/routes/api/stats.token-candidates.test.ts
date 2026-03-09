@@ -119,6 +119,44 @@ describe('/api/models/token-candidates', () => {
     expect(body.modelsWithoutToken['claude-haiku-4-5-20251001']).toBeUndefined();
   });
 
+  it('does not report apikey connections as missing account tokens', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'site-apikey',
+      url: 'https://site-apikey.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning().get();
+
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'shenmo-direct',
+      accessToken: '',
+      apiToken: 'sk-shenmo-direct',
+      status: 'active',
+      extraConfig: JSON.stringify({ credentialMode: 'apikey' }),
+    }).returning().get();
+
+    await db.insert(schema.modelAvailability).values({
+      accountId: account.id,
+      modelName: 'gpt-5.2-codex',
+      available: true,
+    }).run();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/models/token-candidates',
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      modelsWithoutToken: Record<string, Array<{ accountId: number }>>;
+      modelsMissingTokenGroups: Record<string, Array<{ accountId: number }>>;
+    };
+
+    expect(body.modelsWithoutToken['gpt-5.2-codex']).toBeUndefined();
+    expect(body.modelsMissingTokenGroups['gpt-5.2-codex']).toBeUndefined();
+  });
+
   it('returns modelsMissingTokenGroups when account has partial group token coverage', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'site-b',
@@ -364,7 +402,7 @@ describe('/api/models/token-candidates', () => {
     ]);
   });
 
-  it('does not pass deprecated site apiKey into pricing catalog lookup', async () => {
+  it('does not request token-group hints for apikey connections', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'site-e',
       url: 'https://site-e.example.com',
@@ -425,19 +463,11 @@ describe('/api/models/token-candidates', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(fetchModelPricingCatalogMock).toHaveBeenCalled();
-    expect(fetchModelPricingCatalogMock.mock.calls[0]?.[0]).toMatchObject({
-      site: {
-        id: site.id,
-        url: site.url,
-        platform: site.platform,
-      },
-      account: {
-        id: account.id,
-        accessToken: '',
-        apiToken: null,
-      },
-    });
-    expect(fetchModelPricingCatalogMock.mock.calls[0]?.[0]?.site?.apiKey).toBeUndefined();
+    const body = response.json() as {
+      modelsMissingTokenGroups: Record<string, Array<{ accountId: number }>>;
+    };
+
+    expect(fetchModelPricingCatalogMock).not.toHaveBeenCalled();
+    expect(body.modelsMissingTokenGroups['claude-opus-4-6']).toBeUndefined();
   });
 });

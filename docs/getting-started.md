@@ -118,8 +118,10 @@ npm run dev
 进入 **站点管理**，添加你使用的上游中转站：
 
 - 填写站点名称（自己想怎么取就怎么取）和 URL
-- 选择平台类型（New API / One API / OneHub / DoneHub / Veloera / AnyRouter / Sub2API），通常可自动检测
+- 选择平台类型（`new-api` / `one-api` / `one-hub` / `done-hub` / `veloera` / `anyrouter` / `sub2api` / `openai` / `claude` / `gemini` / `cliproxyapi`），通常可自动检测
 - 填写站点的管理员 API Key（可选，部分功能需要）
+
+如果你不确定该选哪个平台，先看 [上游接入](./upstream-integration.md)。
 
 ![站点管理](./screenshots/site-management.png)
 
@@ -206,6 +208,7 @@ curl -sS http://127.0.0.1:4312/v1/models \
 
 ## 下一步
 
+- [上游接入](./upstream-integration.md) — 当前代码支持哪些上游、默认该走哪个连接分段
 - [部署指南](./deployment.md) — 反向代理、HTTPS、升级策略
 - [配置说明](./configuration.md) — 详细环境变量与路由参数
 - [客户端接入](./client-integration.md) — 对接 Open WebUI、Cherry Studio 等

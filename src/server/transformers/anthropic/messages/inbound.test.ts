@@ -54,7 +54,12 @@ describe('anthropicMessagesInbound', () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.value?.claudeOriginalBody).toMatchObject({
+    expect(result.value).toMatchObject({
+      protocol: 'anthropic/messages',
+      model: 'claude-opus-4-6',
+      stream: false,
+    });
+    expect(result.value?.parsed.claudeOriginalBody).toMatchObject({
       thinking: { type: 'adaptive' },
       output_config: { effort: 'high', preserve: true },
       tool_choice: { type: 'tool', name: 'lookup' },
@@ -89,7 +94,7 @@ describe('anthropicMessagesInbound', () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.value?.claudeOriginalBody).toEqual({
+    expect(result.value?.parsed.claudeOriginalBody).toEqual({
       model: 'claude-opus-4-6',
       max_tokens: 512,
       system: [
@@ -151,6 +156,6 @@ describe('anthropicMessagesInbound', () => {
     const result = anthropicMessagesInbound.parse(nativeBody);
 
     expect(result.error).toBeUndefined();
-    expect(result.value?.claudeOriginalBody).toEqual(nativeBody);
+    expect(result.value?.parsed.claudeOriginalBody).toEqual(nativeBody);
   });
 });

@@ -240,6 +240,51 @@ describe('TokenRoutes grouped source models', () => {
     }
   });
 
+  it('does not render missing-token site tags when the hint lacks a valid account id', async () => {
+    apiMock.getRoutes.mockResolvedValue([
+      {
+        id: 1,
+        modelPattern: 'gpt-5.2-codex',
+        displayName: 'gpt-5.2-codex',
+        enabled: true,
+        channels: [],
+      },
+    ]);
+    apiMock.getModelTokenCandidates.mockResolvedValue({
+      models: {},
+      modelsWithoutToken: {
+        'gpt-5.2-codex': [
+          {
+            accountId: 0,
+            username: 'shenmo-direct',
+            siteId: 12,
+            siteName: '神墨',
+          },
+        ],
+      },
+    });
+
+    let root: ReturnType<typeof create> | null = null;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/routes']}>
+            <ToastProvider>
+              <TokenRoutes />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const text = collectText(root.root);
+      expect(text).not.toContain('待注册站点');
+      expect(text).not.toContain('神墨');
+    } finally {
+      root?.unmount();
+    }
+  });
+
   it('maps endpoint types to expected brand icons in filter panel', async () => {
     apiMock.getRoutes.mockResolvedValue([
       {

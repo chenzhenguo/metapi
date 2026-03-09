@@ -69,6 +69,8 @@ const zhToEn: Record<string, string> = {
   '任务状态已更新': 'Task status updated',
   '会话已过期，请重新登录': 'Session expired, please sign in again',
   '首次使用建议先阅读站点文档：': 'For first-time setup, read site docs: ',
+  '首次使用建议先阅读快速上手：': 'For first-time setup, start with Quick Start: ',
+  '首次使用建议先阅读快速开始：': 'For first-time setup, start with Quick Start: ',
   '个人信息已保存': 'Profile saved',
   '搜索': 'Search',
   '搜索 (Ctrl+K)': 'Search (Ctrl+K)',

@@ -43,15 +43,7 @@ function shouldAttemptAutoRelogin(message?: string | null): boolean {
 
 function shouldReportExpired(message?: string | null): boolean {
   if (!message) return false;
-  if (isTokenExpiredError({ message })) return true;
-
-  const text = message.toLowerCase();
-  return (
-    text.includes('access token') ||
-    text.includes('new-api-user') ||
-    text.includes('unauthorized') ||
-    text.includes('forbidden')
-  );
+  return isTokenExpiredError({ message });
 }
 
 function isUnsupportedCheckinRuntimeHealth(health: ReturnType<typeof extractRuntimeHealth>): boolean {

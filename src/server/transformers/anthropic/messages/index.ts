@@ -1,4 +1,5 @@
 import { type NormalizedFinalResponse, type NormalizedStreamEvent, type ParsedDownstreamChatRequest, type StreamTransformContext, type ClaudeDownstreamContext } from '../../shared/normalized.js';
+import { createChatEndpointStrategy } from '../../shared/chatEndpointStrategy.js';
 import { anthropicMessagesInbound } from './inbound.js';
 import { anthropicMessagesOutbound } from './outbound.js';
 import { anthropicMessagesStream, consumeAnthropicSseEvent } from './stream.js';
@@ -22,6 +23,7 @@ export const anthropicMessagesTransformer = {
   stream: anthropicMessagesStream,
   usage: anthropicMessagesUsage,
   compatibility: {
+    createEndpointStrategy: createChatEndpointStrategy,
     shouldRetryNormalizedBody: shouldRetryNormalizedMessagesBody,
     isMessagesRequiredError,
   },

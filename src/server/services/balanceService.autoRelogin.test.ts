@@ -172,6 +172,60 @@ describe('balanceService auto relogin', () => {
     expect(reportTokenExpiredMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not report token expired for generic forbidden balance errors', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 12,
+          username: 'linuxdo_forbidden',
+          accessToken: 'stale-token',
+          status: 'active',
+          extraConfig: null,
+        },
+        sites: {
+          id: 12,
+          name: 'kfc',
+          url: 'https://kfc-api.sxxe.net',
+          platform: 'new-api',
+        },
+      },
+    ]);
+
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('HTTP 403: forbidden'));
+
+    const { refreshBalance } = await import('./balanceService.js');
+    await expect(refreshBalance(12)).rejects.toThrow('forbidden');
+
+    expect(reportTokenExpiredMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report token expired for missing new-api-user errors', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 13,
+          username: 'linuxdo_missing_user',
+          accessToken: 'stale-token',
+          status: 'active',
+          extraConfig: null,
+        },
+        sites: {
+          id: 13,
+          name: 'kfc',
+          url: 'https://kfc-api.sxxe.net',
+          platform: 'new-api',
+        },
+      },
+    ]);
+
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('HTTP 400: new-api-user required'));
+
+    const { refreshBalance } = await import('./balanceService.js');
+    await expect(refreshBalance(13)).rejects.toThrow('new-api-user');
+
+    expect(reportTokenExpiredMock).not.toHaveBeenCalled();
+  });
+
   it('proactively refreshes sub2api token when managed refresh token is near expiry', async () => {
     selectAllMock.mockReturnValue([
       {

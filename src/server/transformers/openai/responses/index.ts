@@ -21,12 +21,20 @@ import {
   serializeConvertedResponsesEvents,
 } from './aggregator.js';
 import { openAiResponsesOutbound } from './outbound.js';
+import { openAiResponsesInbound } from './inbound.js';
+import { createResponsesProxyStreamSession } from './proxyStream.js';
+import { createResponsesEndpointStrategy } from './routeCompatibility.js';
 import { openAiResponsesStream } from './stream.js';
 import { openAiResponsesUsage } from './usage.js';
+import type {
+  OpenAiResponsesParsedRequest as OpenAiResponsesParsedRequestModel,
+  OpenAiResponsesRequestEnvelope as OpenAiResponsesRequestEnvelopeModel,
+} from './model.js';
 
 export const openAiResponsesTransformer = {
   protocol: 'openai/responses' as const,
   inbound: {
+    parse: openAiResponsesInbound.parse,
     normalizeInput: normalizeResponsesInputForCompatibility,
     normalizeMessage: normalizeResponsesMessageItem,
     normalizeContent: normalizeResponsesMessageContent,
@@ -38,6 +46,7 @@ export const openAiResponsesTransformer = {
   stream: openAiResponsesStream,
   usage: openAiResponsesUsage,
   compatibility: {
+    createEndpointStrategy: createResponsesEndpointStrategy,
     buildRetryBodies,
     buildRetryHeaders,
     shouldRetry,
@@ -49,8 +58,14 @@ export const openAiResponsesTransformer = {
     complete: completeResponsesStream,
     fail: failResponsesStream,
   },
-  transformRequest(body: unknown) {
-    return body;
+  proxyStream: {
+    createSession: createResponsesProxyStreamSession,
+  },
+  transformRequest(
+    body: unknown,
+    options?: { defaultEncryptedReasoningInclude?: boolean },
+  ): { value?: OpenAiResponsesRequestEnvelopeModel; error?: { statusCode: number; payload: unknown } } {
+    return openAiResponsesInbound.parse(body, options);
   },
   createStreamContext(modelName: string): StreamTransformContext {
     return openAiResponsesStream.createContext(modelName);
@@ -68,6 +83,8 @@ export const openAiResponsesTransformer = {
 
 export type OpenAiResponsesTransformer = typeof openAiResponsesTransformer;
 export type OpenAiResponsesAggregate = OpenAiResponsesAggregateState;
+export type OpenAiResponsesParsedRequest = OpenAiResponsesParsedRequestModel;
+export type OpenAiResponsesRequestEnvelope = OpenAiResponsesRequestEnvelopeModel;
 export {
   convertOpenAiBodyToResponsesBody,
   convertResponsesBodyToOpenAiBody,

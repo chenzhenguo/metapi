@@ -36,23 +36,35 @@ export const openAiChatStream = {
     return createStreamTransformContext(modelName);
   },
   normalizeEvent(payload: unknown, context: StreamTransformContext, modelName: string): OpenAiChatNormalizedStreamEvent {
+    const normalized = normalizeUpstreamStreamEvent(payload, context, modelName);
     const choiceEvents = extractChatChoiceEvents(payload);
     const primaryChoice = choiceEvents[0];
+    const normalizedChoiceEvents = choiceEvents.map((choiceEvent, index) => (
+      index === 0
+        ? {
+          ...choiceEvent,
+          role: normalized.role !== undefined ? normalized.role : choiceEvent.role,
+          contentDelta: normalized.contentDelta,
+          reasoningDelta: normalized.reasoningDelta,
+          toolCallDeltas: normalized.toolCallDeltas !== undefined
+            ? normalized.toolCallDeltas
+            : choiceEvent.toolCallDeltas,
+          finishReason: normalized.finishReason !== undefined
+            ? normalized.finishReason
+            : choiceEvent.finishReason,
+        }
+        : choiceEvent
+    ));
     return {
-      ...normalizeUpstreamStreamEvent(payload, context, modelName),
+      ...normalized,
       ...(primaryChoice
         ? {
           choiceIndex: primaryChoice.index,
-          role: primaryChoice.role,
-          contentDelta: primaryChoice.contentDelta,
-          reasoningDelta: primaryChoice.reasoningDelta,
-          toolCallDeltas: primaryChoice.toolCallDeltas,
-          finishReason: primaryChoice.finishReason,
           annotations: primaryChoice.annotations,
           citations: primaryChoice.citations,
         }
         : {}),
-      ...(choiceEvents.length > 0 ? { choiceEvents } : {}),
+      ...(normalizedChoiceEvents.length > 0 ? { choiceEvents: normalizedChoiceEvents } : {}),
       ...extractChatResponseExtras(payload),
     };
   },

@@ -3,6 +3,7 @@ import type {
   NormalizedStreamEvent,
   ParsedDownstreamChatRequest,
 } from '../../shared/normalized.js';
+import type { ProtocolRequestEnvelope } from '../../shared/protocolModel.js';
 
 export type OpenAiChatAudioRequest = {
   format?: string;
@@ -31,9 +32,12 @@ export type OpenAiChatUsageDetails = {
   completion_tokens_details?: Record<string, number>;
 };
 
-export type OpenAiChatParsedRequest = ParsedDownstreamChatRequest & {
-  requestMetadata?: OpenAiChatRequestMetadata;
-};
+export type OpenAiChatParsedRequest = ParsedDownstreamChatRequest;
+export type OpenAiChatRequestEnvelope = ProtocolRequestEnvelope<
+  'openai/chat',
+  OpenAiChatParsedRequest,
+  OpenAiChatRequestMetadata
+>;
 
 export type OpenAiChatToolCall = {
   id: string;

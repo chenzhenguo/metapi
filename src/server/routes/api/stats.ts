@@ -17,6 +17,7 @@ import {
   parseProxyLogBillingDetails,
   withProxyLogSelectFields,
 } from '../../services/proxyLogStore.js';
+import { getCredentialModeFromExtraConfig } from '../../services/accountExtraConfig.js';
 import {
   formatUtcSqlDateTime,
   getLocalDayRangeUtc,
@@ -28,6 +29,12 @@ function parseBooleanFlag(raw?: string): boolean {
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
+function isApiKeyConnection(account: { accessToken?: string | null; extraConfig?: string | null }): boolean {
+  const explicit = getCredentialModeFromExtraConfig(account.extraConfig);
+  if (explicit && explicit !== 'auto') return explicit === 'apikey';
+  return !(account.accessToken || '').trim();
 }
 
 const MODELS_MARKETPLACE_BASE_TTL_MS = 15_000;
@@ -711,6 +718,8 @@ export async function statsRoutes(app: FastifyInstance) {
       username: schema.accounts.username,
       siteId: schema.sites.id,
       siteName: schema.sites.name,
+      accessToken: schema.accounts.accessToken,
+      extraConfig: schema.accounts.extraConfig,
     })
       .from(schema.modelAvailability)
       .innerJoin(schema.accounts, eq(schema.modelAvailability.accountId, schema.accounts.id))
@@ -788,6 +797,7 @@ export async function statsRoutes(app: FastifyInstance) {
     }
 
     for (const row of availableModelRows) {
+      if (isApiKeyConnection(row)) continue;
       const modelName = (row.modelName || '').trim();
       if (!modelName) continue;
       const coverageKey = `${row.accountId}::${modelName.toLowerCase()}`;
@@ -802,7 +812,11 @@ export async function statsRoutes(app: FastifyInstance) {
       });
     }
 
-    const accountIdsForGroupHints = new Set(availableModelRows.map((row) => row.accountId));
+    const accountIdsForGroupHints = new Set(
+      availableModelRows
+        .filter((row) => !isApiKeyConnection(row))
+        .map((row) => row.accountId),
+    );
     const requiredGroupsByAccountModel = new Map<string, Map<string, string>>();
     const hasPotentialGroupHints = hasAnyTokenGroupSignals || unknownGroupCoverageByAccountModel.size > 0;
 
@@ -862,6 +876,7 @@ export async function statsRoutes(app: FastifyInstance) {
     }
 
     for (const row of availableModelRows) {
+      if (isApiKeyConnection(row)) continue;
       const modelName = (row.modelName || '').trim();
       if (!modelName) continue;
       const accountModelKey = `${row.accountId}::${modelName.toLowerCase()}`;

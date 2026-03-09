@@ -1,4 +1,5 @@
 import { parseDownstreamChatRequest, type ParsedDownstreamChatRequest } from '../../shared/normalized.js';
+import { createProtocolRequestEnvelope, type ProtocolRequestEnvelope } from '../../shared/protocolModel.js';
 import { validateAnthropicMessagesBody } from './conversion.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,7 +137,10 @@ function sanitizeAnthropicInboundBody(
 }
 
 export const anthropicMessagesInbound = {
-  parse(body: unknown): { value?: ParsedDownstreamChatRequest; error?: { statusCode: number; payload: unknown } } {
+  parse(body: unknown): {
+    value?: ProtocolRequestEnvelope<'anthropic/messages', ParsedDownstreamChatRequest>;
+    error?: { statusCode: number; payload: unknown };
+  } {
     const rawBody = isRecord(body) ? body : null;
     const inboundValidation = rawBody ? sanitizeAnthropicInboundBody(rawBody) : null;
     if (inboundValidation?.error) {
@@ -145,12 +149,25 @@ export const anthropicMessagesInbound = {
 
     const effectiveBody = inboundValidation?.sanitizedBody ?? body;
     const parsed = parseDownstreamChatRequest(effectiveBody, 'claude');
-    if (parsed.error || !parsed.value) return parsed;
+    if (parsed.error) {
+      return { error: parsed.error };
+    }
+    if (!parsed.value) {
+      return { error: invalidRequest('invalid messages request') };
+    }
 
     if (inboundValidation?.sanitizedBody) {
       parsed.value.claudeOriginalBody = inboundValidation.sanitizedBody;
     }
 
-    return parsed;
+    return {
+      value: createProtocolRequestEnvelope({
+        protocol: 'anthropic/messages',
+        model: parsed.value.requestedModel,
+        stream: parsed.value.isStream,
+        rawBody: body,
+        parsed: parsed.value,
+      }),
+    };
   },
 };

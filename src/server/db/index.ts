@@ -9,6 +9,7 @@ import { ensureSiteSchemaCompatibility, type SiteSchemaInspector } from './siteS
 import { ensureRouteGroupingSchemaCompatibility } from './routeGroupingSchemaCompatibility.js';
 import { ensureProxyFileSchemaCompatibility } from './proxyFileSchemaCompatibility.js';
 import { config } from '../config.js';
+import { ensureRuntimeDatabaseReady } from '../runtimeDatabaseBootstrap.js';
 import { mkdirSync } from 'fs';
 import { dirname, resolve } from 'path';
 
@@ -938,6 +939,11 @@ export async function switchRuntimeDatabase(nextDialect: RuntimeDbDialect, nextD
 
   try {
     activeDb = initDb();
+    await ensureRuntimeDatabaseReady({
+      dialect: nextDialect,
+      connectionString: nextDbUrl,
+      ssl: config.dbSsl,
+    });
   } catch (error) {
     await closeDbConnections();
     runtimeDbDialect = previousDialect;
