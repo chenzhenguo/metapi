@@ -9,6 +9,8 @@ import {
 } from '../api.js';
 import { useToast } from '../components/Toast.js';
 import { ModelBadge } from '../components/BrandIcon.js';
+import { MobileCard, MobileField } from '../components/MobileCard.js';
+import { useIsMobile } from '../components/useIsMobile.js';
 import { formatDateTimeLocal } from './helpers/checkinLogTime.js';
 import ModernSelect from '../components/ModernSelect.js';
 import { parseProxyLogPathMeta } from './helpers/proxyLogPathMeta.js';
@@ -123,6 +125,7 @@ export default function ProxyLogs() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [detailById, setDetailById] = useState<Record<number, ProxyLogDetailState>>({});
+  const isMobile = useIsMobile(768);
   const toast = useToast();
 
   useEffect(() => {
@@ -274,6 +277,66 @@ export default function ProxyLogs() {
                 <div className="skeleton" style={{ width: 70, height: 16 }} />
               </div>
             ))}
+          </div>
+        ) : isMobile ? (
+          <div className="mobile-card-list">
+            {logs.map((log) => {
+              const detailState = detailById[log.id];
+              const detail = detailState?.data;
+              const detailLog: ProxyLogRenderItem = detail ? { ...log, ...detail } : log;
+              const pathMeta = parseProxyLogPathMeta(detailLog.errorMessage);
+              const billingDetailSummary = detail ? formatBillingDetailSummary(detailLog) : null;
+              const billingProcessLines = detail ? buildBillingProcessLines(detailLog) : [];
+              const isExpanded = expanded === log.id;
+
+              return (
+                <MobileCard
+                  key={log.id}
+                  title={detailLog.modelRequested || 'unknown'}
+                  actions={(
+                    <span className={`badge ${log.status === 'success' ? 'badge-success' : 'badge-error'}`} style={{ fontSize: 10 }}>
+                      {log.status === 'success' ? '成功' : '失败'}
+                    </span>
+                  )}
+                >
+                  <MobileField label="时间" value={formatDateTimeLocal(log.createdAt)} />
+                  <MobileField label="用时" value={formatLatency(log.latencyMs)} />
+                  <MobileField label="输入" value={log.promptTokens?.toLocaleString() || '-'} />
+                  <MobileField label="输出" value={log.completionTokens?.toLocaleString() || '-'} />
+                  <MobileField
+                    label="花费"
+                    value={typeof log.estimatedCost === 'number' ? `$${log.estimatedCost.toFixed(6)}` : '-'}
+                  />
+                  {isExpanded ? (
+                    <div className="mobile-card-extra">
+                      <MobileField label="重试" value={log.retryCount > 0 ? log.retryCount : 0} />
+                      {detailState?.loading && <div style={{ color: 'var(--color-text-muted)' }}>加载详情中...</div>}
+                      {detailState?.error && <div style={{ color: 'var(--color-danger)' }}>{detailState.error}</div>}
+                      {billingDetailSummary && <div style={{ color: 'var(--color-text-muted)' }}>{billingDetailSummary}</div>}
+                      {billingProcessLines.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {billingProcessLines.map((line, index) => (
+                            <span key={`${log.id}-billing-mobile-${index}`}>{line}</span>
+                          ))}
+                        </div>
+                      )}
+                      {detail && pathMeta.errorMessage.trim().length > 0 && (
+                        <div style={{ color: 'var(--color-danger)' }}>{pathMeta.errorMessage}</div>
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="mobile-card-actions">
+                    <button
+                      type="button"
+                      className="btn btn-link"
+                      onClick={() => handleToggleExpand(log.id)}
+                    >
+                      {isExpanded ? '收起' : '详情'}
+                    </button>
+                  </div>
+                </MobileCard>
+              );
+            })}
           </div>
         ) : (
           <table className="data-table" style={{ width: '100%' }}>

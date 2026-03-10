@@ -21,7 +21,9 @@ import { api } from '../api.js';
 import { BrandGlyph, InlineBrandIcon, getBrand, hashColor, normalizeBrandIconKey, type BrandInfo } from '../components/BrandIcon.js';
 import { useToast } from '../components/Toast.js';
 import ModernSelect from '../components/ModernSelect.js';
+import { MobileCard, MobileField } from '../components/MobileCard.js';
 import { useAnimatedVisibility } from '../components/useAnimatedVisibility.js';
+import { useIsMobile } from '../components/useIsMobile.js';
 import { tr } from '../i18n.js';
 import {
   buildRouteModelCandidatesIndex,
@@ -729,6 +731,8 @@ export default function TokenRoutes() {
   const [decisionAutoSkipped, setDecisionAutoSkipped] = useState(false);
   const [visibleRouteCount, setVisibleRouteCount] = useState(ROUTE_RENDER_CHUNK);
   const [expandedSourceGroupMap, setExpandedSourceGroupMap] = useState<Record<string, boolean>>({});
+  const [expandedRouteIds, setExpandedRouteIds] = useState<number[]>([]);
+  const isMobile = useIsMobile(768);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -1878,7 +1882,10 @@ export default function TokenRoutes() {
             </div>
           )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div
+            className={isMobile ? 'mobile-card-list' : ''}
+            style={isMobile ? undefined : { display: 'flex', flexDirection: 'column', gap: 12 }}
+          >
             {visibleRoutes.map((route, i) => {
               const candidateView = getRouteCandidateView(route.id);
               const routeCandidates = candidateView.routeCandidates;
@@ -1949,7 +1956,7 @@ export default function TokenRoutes() {
               const routeIcon = resolveRouteIcon(route);
               const routeBrand = routeBrandById.get(route.id) || null;
 
-              return (
+              const routeCard = (
                 <div
                   key={route.id}
                   className={`card animate-slide-up stagger-${Math.min(i + 1, 5)}`}
@@ -2326,6 +2333,44 @@ export default function TokenRoutes() {
                     <div style={{ fontSize: 13, color: 'var(--color-text-muted)', paddingLeft: 4 }}>暂无通道</div>
                   )}
                 </div>
+              );
+
+              const isExpanded = expandedRouteIds.includes(route.id);
+
+              return isMobile ? (
+                <MobileCard
+                  key={route.id}
+                  title={resolveRouteTitle(route)}
+                  actions={(
+                    <span className={`badge ${route.enabled ? 'badge-success' : 'badge-muted'}`} style={{ fontSize: 10 }}>
+                      {route.enabled ? tr('启用') : tr('禁用')}
+                    </span>
+                  )}
+                >
+                  <MobileField label="模型" value={route.modelPattern} />
+                  <MobileField label="通道" value={route.channels?.length || 0} />
+                  <MobileField label="状态" value={route.enabled ? tr('启用') : tr('禁用')} />
+                  {isExpanded ? (
+                    <div className="mobile-card-extra">
+                      {routeCard}
+                    </div>
+                  ) : null}
+                  <div className="mobile-card-actions">
+                    <button
+                      type="button"
+                      className="btn btn-link"
+                      onClick={() => setExpandedRouteIds((prev) => (
+                        prev.includes(route.id)
+                          ? prev.filter((id) => id !== route.id)
+                          : [...prev, route.id]
+                      ))}
+                    >
+                      {isExpanded ? '收起' : '详情'}
+                    </button>
+                  </div>
+                </MobileCard>
+              ) : (
+                routeCard
               );
             })}
 
