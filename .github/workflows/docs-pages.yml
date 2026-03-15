@@ -3,6 +3,11 @@ name: Docs Pages
 on:
   push:
     branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-pages.yml'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
@@ -11,7 +16,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: docs-pages
+  group: docs-pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
