@@ -8,7 +8,8 @@ import { isTokenExpiredError } from '../../services/alertRules.js';
 import { shouldRetryProxyRequest } from '../../services/proxyRetryPolicy.js';
 import { resolveProxyUsageWithSelfLogFallback } from '../../services/proxyUsageFallbackService.js';
 import { mergeProxyUsage, parseProxyUsage } from '../../services/proxyUsageParser.js';
-import { resolveProxyUrlForSite, withSiteRecordProxyRequestInit } from '../../services/siteProxy.js';
+import { resolveChannelProxyUrl, withSiteRecordProxyRequestInit } from '../../services/siteProxy.js';
+import { getProxyUrlFromExtraConfig } from '../../services/accountExtraConfig.js';
 import { openAiResponsesTransformer } from '../../transformers/openai/responses/index.js';
 import {
   buildUpstreamEndpointRequest,
@@ -259,7 +260,7 @@ export async function responsesProxyRoute(app: FastifyInstance) {
             method: 'POST',
             headers: compatibilityRequest.headers,
             body: JSON.stringify(compatibilityRequest.body),
-          }),
+          }, getProxyUrlFromExtraConfig(selected.account.extraConfig)),
         ),
       });
 
@@ -268,7 +269,7 @@ export async function responsesProxyRoute(app: FastifyInstance) {
       try {
         const endpointResult = await executeEndpointFlow({
           siteUrl: selected.site.url,
-          proxyUrl: resolveProxyUrlForSite(selected.site),
+          proxyUrl: resolveChannelProxyUrl(selected.site, selected.account.extraConfig),
           endpointCandidates,
           buildRequest: (endpoint) => buildEndpointRequest(endpoint),
           tryRecover: endpointStrategy.tryRecover,

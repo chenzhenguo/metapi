@@ -10,6 +10,7 @@ import { resolveProxyUsageWithSelfLogFallback } from '../../services/proxyUsageF
 import { parseProxyUsage } from '../../services/proxyUsageParser.js';
 import { ensureModelAllowedForDownstreamKey, getDownstreamRoutingPolicy, recordDownstreamCostUsage } from './downstreamPolicy.js';
 import { withSiteRecordProxyRequestInit } from '../../services/siteProxy.js';
+import { getProxyUrlFromExtraConfig } from '../../services/accountExtraConfig.js';
 import { composeProxyLogMessage } from './logPathMeta.js';
 import { formatUtcSqlDateTime } from '../../services/localTimeService.js';
 import { resolveProxyLogBilling } from './proxyBilling.js';
@@ -62,7 +63,7 @@ export async function embeddingsProxyRoute(app: FastifyInstance) {
             'Authorization': `Bearer ${selected.tokenValue}`,
           },
           body: JSON.stringify(forwardBody),
-        }));
+        }, getProxyUrlFromExtraConfig(selected.account.extraConfig)));
 
         const text = await upstream.text();
         if (!upstream.ok) {
