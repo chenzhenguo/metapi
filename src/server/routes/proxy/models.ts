@@ -1,6 +1,4 @@
 import { FastifyInstance } from 'fastify';
-import { db, schema } from '../../db/index.js';
-import { and, eq } from 'drizzle-orm';
 import { refreshModelsAndRebuildRoutes } from '../../services/modelService.js';
 import { getDownstreamRoutingPolicy } from './downstreamPolicy.js';
 import { tokenRouter } from '../../services/tokenRouter.js';
@@ -17,28 +15,7 @@ export async function modelsProxyRoute(app: FastifyInstance) {
     const downstreamPolicy = getDownstreamRoutingPolicy(request);
 
     const readModels = async () => {
-      const rows = await db.select({ modelName: schema.modelAvailability.modelName })
-        .from(schema.modelAvailability)
-        .innerJoin(schema.accounts, eq(schema.modelAvailability.accountId, schema.accounts.id))
-        .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-        .where(
-          and(
-            eq(schema.modelAvailability.available, true),
-            eq(schema.accounts.status, 'active'),
-            eq(schema.sites.status, 'active'),
-          ),
-        )
-        .all();
-      const routeAliases = (await db.select({ displayName: schema.tokenRoutes.displayName })
-        .from(schema.tokenRoutes)
-        .where(eq(schema.tokenRoutes.enabled, true))
-        .all())
-        .map((row) => (row.displayName || '').trim())
-        .filter((name) => name.length > 0);
-      const deduped = Array.from(new Set([
-        ...rows.map((r) => r.modelName),
-        ...routeAliases,
-      ]))
+      const deduped = Array.from(new Set(await tokenRouter.getAvailableModels()))
         .filter((modelName) => !isSearchPseudoModel(modelName))
         .sort();
       const allowed: string[] = [];

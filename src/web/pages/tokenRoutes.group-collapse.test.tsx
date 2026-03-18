@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/Toast.js';
 import TokenRoutes from './TokenRoutes.js';
+import { ROUTE_ICON_NONE_VALUE } from './token-routes/utils.js';
 
 const { apiMock, getBrandMock } = vi.hoisted(() => ({
   apiMock: {
@@ -52,6 +53,15 @@ function findInputByPlaceholder(root: ReactTestInstance, placeholderText: string
     node.type === 'input'
     && typeof node.props.placeholder === 'string'
     && node.props.placeholder.includes(placeholderText)
+  ));
+}
+
+function findCheckboxByLabelText(root: ReactTestInstance, text: string): ReactTestInstance {
+  return root.find((node) => (
+    node.type === 'input'
+    && node.props.type === 'checkbox'
+    && !!node.parent
+    && collectText(node.parent).includes(text)
   ));
 }
 
@@ -855,16 +865,23 @@ describe('TokenRoutes grouped source models', () => {
     }
   });
 
-  it('enters edit mode and seeds the group form with the current route values', async () => {
+  it('uses a dedicated source picker modal and submits explicit-group sourceRouteIds', async () => {
     apiMock.getRoutesSummary.mockResolvedValue([
       {
-        id: 31, modelPattern: 're:^claude-(opus|sonnet)-4-6$', displayName: 'claude-4-6-group',
-        displayIcon: 'anthropic', modelMapping: null, enabled: true,
+        id: 11, modelPattern: 'claude-opus-4-5', displayName: null,
+        displayIcon: null, modelMapping: null, enabled: true,
+        routeMode: 'pattern', sourceRouteIds: [],
+        channelCount: 1, enabledChannelCount: 1, siteNames: ['site-a'],
+        decisionSnapshot: null, decisionRefreshedAt: null,
+      },
+      {
+        id: 12, modelPattern: 'claude-sonnet-4-5', displayName: null,
+        displayIcon: null, modelMapping: null, enabled: true,
+        routeMode: 'pattern', sourceRouteIds: [],
         channelCount: 0, enabledChannelCount: 0, siteNames: [],
         decisionSnapshot: null, decisionRefreshedAt: null,
       },
     ]);
-    apiMock.getRouteChannels.mockResolvedValue([]);
 
     let root: ReturnType<typeof create> | null = null;
     try {
@@ -879,109 +896,129 @@ describe('TokenRoutes grouped source models', () => {
       });
       await flushMicrotasks();
 
-      // Expand the card to access edit button
-      const expandBtn = root.root.find((node) =>
-        node.type === 'div' && String(node.props.className || '').includes('route-card-collapsed'),
-      );
       await act(async () => {
-        expandBtn.props.onClick();
-      });
-      await flushMicrotasks();
-
-      const editButton = findButtonByText(root.root, '编辑群组');
-      await act(async () => {
-        editButton.props.onClick();
-      });
-      await flushMicrotasks();
-
-      expect(findInputByPlaceholder(root.root, '群组显示名').props.value).toBe('claude-4-6-group');
-      expect(findInputByPlaceholder(root.root, '模型匹配').props.value).toBe('re:^claude-(opus|sonnet)-4-6$');
-      expect(collectText(root.root)).toContain('保存群组');
-    } finally {
-      root?.unmount();
-    }
-  });
-
-  it('updates route metadata from edit mode and reloads routes afterwards', async () => {
-    apiMock.getRoutesSummary
-      .mockResolvedValueOnce([
-        {
-          id: 41, modelPattern: 're:^claude-.*$', displayName: 'old-group',
-          displayIcon: '', modelMapping: null, enabled: true,
-          channelCount: 0, enabledChannelCount: 0, siteNames: [],
-          decisionSnapshot: null, decisionRefreshedAt: null,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 41, modelPattern: 're:^claude-.*$', displayName: 'new-group',
-          displayIcon: '', modelMapping: null, enabled: true,
-          channelCount: 0, enabledChannelCount: 0, siteNames: [],
-          decisionSnapshot: null, decisionRefreshedAt: null,
-        },
-      ]);
-    apiMock.getRouteChannels.mockResolvedValue([]);
-
-    let root: ReturnType<typeof create> | null = null;
-    try {
-      await act(async () => {
-        root = create(
-          <MemoryRouter initialEntries={['/routes']}>
-            <ToastProvider>
-              <TokenRoutes />
-            </ToastProvider>
-          </MemoryRouter>,
-        );
-      });
-      await flushMicrotasks();
-
-      // Expand the card
-      const expandBtn = root.root.find((node) =>
-        node.type === 'div' && String(node.props.className || '').includes('route-card-collapsed'),
-      );
-      await act(async () => {
-        expandBtn.props.onClick();
+        findButtonByText(root.root, '新建群组').props.onClick();
       });
       await flushMicrotasks();
 
       await act(async () => {
-        findButtonByText(root.root, '编辑群组').props.onClick();
+        findInputByPlaceholder(root.root, '对外模型名').props.onChange({ target: { value: 'claude-opus-4-6' } });
+      });
+      await flushMicrotasks();
+
+      expect(root.root.findAll((node) => typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('搜索来源模型'))).toHaveLength(0);
+
+      await act(async () => {
+        findButtonByText(root.root, '选择来源模型').props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(findInputByPlaceholder(root.root, '搜索来源模型')).toBeTruthy();
+
+      await act(async () => {
+        findButtonByText(root.root, 'claude-opus-4-5').props.onClick();
+        findButtonByText(root.root, 'claude-sonnet-4-5').props.onClick();
       });
       await flushMicrotasks();
 
       await act(async () => {
-        findInputByPlaceholder(root.root, '群组显示名').props.onChange({ target: { value: 'new-group' } });
-      });
-
-      await act(async () => {
-        findButtonByText(root.root, '保存群组').props.onClick();
+        findButtonByText(root.root, '确认选择').props.onClick();
       });
       await flushMicrotasks();
 
-      expect(apiMock.updateRoute).toHaveBeenCalledWith(41, expect.objectContaining({
-        displayName: 'new-group',
-        modelPattern: 're:^claude-.*$',
+      await act(async () => {
+        findButtonByText(root.root, '创建群组').props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(collectText(root.root)).toContain('模型重定向');
+      expect(apiMock.addRoute).toHaveBeenCalledWith(expect.objectContaining({
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [11, 12],
       }));
-      expect(apiMock.getRoutesSummary).toHaveBeenCalledTimes(2);
     } finally {
       root?.unmount();
     }
   });
 
-  it('reloads route data after saving an edited model pattern', async () => {
+  it('saves explicit groups with auto brand icon disabled as a no-icon sentinel', async () => {
+    apiMock.getRoutesSummary.mockResolvedValue([
+      {
+        id: 11, modelPattern: 'claude-opus-4-5', displayName: null,
+        displayIcon: null, modelMapping: null, enabled: true,
+        routeMode: 'pattern', sourceRouteIds: [],
+        channelCount: 1, enabledChannelCount: 1, siteNames: ['site-a'],
+        decisionSnapshot: null, decisionRefreshedAt: null,
+      },
+    ]);
+
+    let root: ReturnType<typeof create> | null = null;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/routes']}>
+            <ToastProvider>
+              <TokenRoutes />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '新建群组').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findInputByPlaceholder(root.root, '对外模型名').props.onChange({ target: { value: 'claude-opus-4-6' } });
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '选择来源模型').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, 'claude-opus-4-5').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '确认选择').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findCheckboxByLabelText(root.root, '自动品牌图标').props.onChange({ target: { checked: false } });
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '创建群组').props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.addRoute).toHaveBeenCalledWith(expect.objectContaining({
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [11],
+        displayIcon: ROUTE_ICON_NONE_VALUE,
+      }));
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('edits legacy regex groups in advanced mode only', async () => {
     apiMock.getRoutesSummary
       .mockResolvedValueOnce([
         {
           id: 51, modelPattern: 're:^claude-.*$', displayName: 'group-a',
           displayIcon: '', modelMapping: null, enabled: true,
-          channelCount: 0, enabledChannelCount: 0, siteNames: [],
-          decisionSnapshot: null, decisionRefreshedAt: null,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 51, modelPattern: 're:^gemini-.*$', displayName: 'group-a',
-          displayIcon: '', modelMapping: null, enabled: true,
+          routeMode: 'pattern', sourceRouteIds: [],
           channelCount: 0, enabledChannelCount: 0, siteNames: [],
           decisionSnapshot: null, decisionRefreshedAt: null,
         },
@@ -1015,17 +1052,117 @@ describe('TokenRoutes grouped source models', () => {
       });
       await flushMicrotasks();
 
+      expect(collectText(root.root)).toContain('高级规则群组');
+      expect(findInputByPlaceholder(root.root, '模型匹配').props.value).toBe('re:^claude-.*$');
+      expect(root.root.findAll((node) => typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('搜索来源模型'))).toHaveLength(0);
+      expect(root.root.findAll((node) => typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('对外模型名'))).toHaveLength(0);
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('updates explicit-group sources from the modal and reloads routes afterwards', async () => {
+    apiMock.getRoutesSummary
+      .mockResolvedValueOnce([
+        {
+          id: 11, modelPattern: 'claude-opus-4-5', displayName: null,
+          displayIcon: null, modelMapping: null, enabled: true,
+          routeMode: 'pattern', sourceRouteIds: [],
+          channelCount: 1, enabledChannelCount: 1, siteNames: ['site-a'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+        {
+          id: 12, modelPattern: 'claude-sonnet-4-5', displayName: null,
+          displayIcon: null, modelMapping: null, enabled: true,
+          routeMode: 'pattern', sourceRouteIds: [],
+          channelCount: 1, enabledChannelCount: 1, siteNames: ['site-b'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+        {
+          id: 21, modelPattern: 'claude-opus-4-6', displayName: 'claude-opus-4-6',
+          displayIcon: '', modelMapping: null, enabled: true,
+          routeMode: 'explicit_group', sourceRouteIds: [11],
+          channelCount: 1, enabledChannelCount: 1, siteNames: ['site-a'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 11, modelPattern: 'claude-opus-4-5', displayName: null,
+          displayIcon: null, modelMapping: null, enabled: true,
+          routeMode: 'pattern', sourceRouteIds: [],
+          channelCount: 1, enabledChannelCount: 1, siteNames: ['site-a'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+        {
+          id: 12, modelPattern: 'claude-sonnet-4-5', displayName: null,
+          displayIcon: null, modelMapping: null, enabled: true,
+          routeMode: 'pattern', sourceRouteIds: [],
+          channelCount: 1, enabledChannelCount: 1, siteNames: ['site-b'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+        {
+          id: 21, modelPattern: 'claude-opus-4-6', displayName: 'claude-opus-4-6',
+          displayIcon: '', modelMapping: null, enabled: true,
+          routeMode: 'explicit_group', sourceRouteIds: [11, 12],
+          channelCount: 2, enabledChannelCount: 2, siteNames: ['site-a', 'site-b'],
+          decisionSnapshot: null, decisionRefreshedAt: null,
+        },
+      ]);
+    apiMock.getRouteChannels.mockResolvedValue([]);
+
+    let root: ReturnType<typeof create> | null = null;
+    try {
       await act(async () => {
-        findInputByPlaceholder(root.root, '模型匹配').props.onChange({ target: { value: 're:^gemini-.*$' } });
+        root = create(
+          <MemoryRouter initialEntries={['/routes']}>
+            <ToastProvider>
+              <TokenRoutes />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
       });
+      await flushMicrotasks();
+
+      const expandBtn = root.root.find((node) =>
+        node.type === 'div'
+        && String(node.props.className || '').includes('route-card-collapsed')
+        && collectText(node).includes('claude-opus-4-6'),
+      );
+      await act(async () => {
+        expandBtn.props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '编辑群组').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '选择来源模型').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, 'claude-sonnet-4-5').props.onClick();
+      });
+      await flushMicrotasks();
+
+      await act(async () => {
+        findButtonByText(root.root, '确认选择').props.onClick();
+      });
+      await flushMicrotasks();
 
       await act(async () => {
         findButtonByText(root.root, '保存群组').props.onClick();
       });
       await flushMicrotasks();
 
-      expect(apiMock.updateRoute).toHaveBeenCalledWith(51, expect.objectContaining({
-        modelPattern: 're:^gemini-.*$',
+      expect(apiMock.updateRoute).toHaveBeenCalledWith(21, expect.objectContaining({
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [11, 12],
       }));
       expect(apiMock.getRoutesSummary).toHaveBeenCalledTimes(2);
     } finally {

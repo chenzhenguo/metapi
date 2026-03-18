@@ -30,6 +30,7 @@ import type {
   GroupFilter,
   RouteSummaryRow,
   RouteRoutingStrategy,
+  RouteMode,
   RouteDecision,
   RouteIconOption,
   MissingTokenRouteSiteActionItem,
@@ -40,7 +41,10 @@ import {
   AUTO_ROUTE_DECISION_LIMIT,
   ROUTE_RENDER_CHUNK,
   isExactModelPattern,
+  isExplicitGroupRoute,
+  isRouteExactModel,
   matchesModelPattern,
+  normalizeRouteMode,
   resolveRouteTitle,
   resolveRouteBrand,
   resolveRouteIcon,
@@ -66,6 +70,24 @@ const ROUTE_ICON_OPTIONS: RouteIconOption[] = [
   { value: '', label: '自动品牌图标', description: '按模型匹配规则自动识别品牌', iconText: '✦' },
 ];
 
+type RouteEditorForm = {
+  routeMode: RouteMode;
+  displayName: string;
+  displayIcon: string;
+  modelPattern: string;
+  sourceRouteIds: number[];
+  advancedOpen: boolean;
+};
+
+const EMPTY_ROUTE_FORM: RouteEditorForm = {
+  routeMode: 'explicit_group',
+  displayName: '',
+  displayIcon: '',
+  modelPattern: '',
+  sourceRouteIds: [],
+  advancedOpen: false,
+};
+
 export default function TokenRoutes() {
   const navigate = useNavigate();
   const [routeSummaries, setRouteSummaries] = useState<RouteSummaryRow[]>([]);
@@ -86,7 +108,7 @@ export default function TokenRoutes() {
   const [sortDir, setSortDir] = useState<RouteSortDir>('desc');
 
   const [showManual, setShowManual] = useState(false);
-  const [form, setForm] = useState({ modelPattern: '', displayName: '', displayIcon: '' });
+  const [form, setForm] = useState<RouteEditorForm>(EMPTY_ROUTE_FORM);
   const [editingRouteId, setEditingRouteId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -120,9 +142,9 @@ export default function TokenRoutes() {
     options?: { force?: boolean; refreshPricingCatalog?: boolean; persistSnapshots?: boolean },
   ) => {
     const rows = routeRows || [];
-    const exactRoutes = rows.filter((route) => isExactModelPattern(route.modelPattern));
+    const exactRoutes = rows.filter((route) => isRouteExactModel(route));
     const wildcardRouteIds = rows
-      .filter((route) => !isExactModelPattern(route.modelPattern))
+      .filter((route) => !isRouteExactModel(route))
       .map((route) => route.id);
 
     const requestedModels = Array.from(new Set<string>(exactRoutes.map((route) => route.modelPattern)));
@@ -204,7 +226,7 @@ export default function TokenRoutes() {
     }
     setDecisionByRoute(decisionPlaceholder);
     setDecisionAutoSkipped(
-      summaries.some((route) => isExactModelPattern(route.modelPattern) && !route.decisionSnapshot),
+      summaries.some((route) => isRouteExactModel(route) && !route.decisionSnapshot),
     );
   };
 
@@ -249,7 +271,7 @@ export default function TokenRoutes() {
 
   const exactRouteCount = useMemo(
     () => buildVisibleRouteList(routeSummaries, isExactModelPattern, matchesModelPattern)
-      .filter((route) => isExactModelPattern(route.modelPattern)).length,
+      .filter((route) => isRouteExactModel(route)).length,
     [routeSummaries],
   );
 
@@ -263,9 +285,13 @@ export default function TokenRoutes() {
     [routeSummaries, showZeroChannelRoutes, zeroChannelPlaceholderRoutes],
   );
 
-  const canSaveRoute = !saving
-    && !!form.modelPattern.trim()
-    && !getModelPatternError(form.modelPattern);
+  const canSaveRoute = useMemo(() => {
+    if (saving) return false;
+    if (form.routeMode === 'explicit_group') {
+      return !!form.displayName.trim() && form.sourceRouteIds.length > 0;
+    }
+    return !!form.modelPattern.trim() && !getModelPatternError(form.modelPattern);
+  }, [form.displayName, form.modelPattern, form.routeMode, form.sourceRouteIds.length, saving]);
 
   const previewModelSamples = useMemo(() => {
     const names = new Set<string>();
@@ -274,7 +300,7 @@ export default function TokenRoutes() {
       if (normalized) names.add(normalized);
     }
     for (const route of routeSummaries) {
-      if (!isExactModelPattern(route.modelPattern)) continue;
+      if (!isRouteExactModel(route)) continue;
       const normalized = route.modelPattern.trim();
       if (normalized) names.add(normalized);
     }
@@ -283,38 +309,59 @@ export default function TokenRoutes() {
       .slice(0, 800);
   }, [modelCandidates, routeSummaries]);
 
+  const exactSourceRouteOptions = useMemo(
+    () => routeSummaries.filter((route) => isRouteExactModel(route)),
+    [routeSummaries],
+  );
+
   const resetRouteForm = () => {
-    setForm({ modelPattern: '', displayName: '', displayIcon: '' });
+    setForm(EMPTY_ROUTE_FORM);
     setEditingRouteId(null);
   };
 
   const handleAddRoute = async () => {
-    if (!form.modelPattern.trim()) return;
-    const modelPatternError = getModelPatternError(form.modelPattern);
-    if (modelPatternError) {
-      toast.error(modelPatternError);
-      return;
-    }
-
-    const trimmedModelPattern = form.modelPattern.trim();
     const trimmedDisplayName = form.displayName.trim() ? form.displayName.trim() : undefined;
     const trimmedDisplayIcon = form.displayIcon.trim() ? form.displayIcon.trim() : undefined;
+    const trimmedModelPattern = form.modelPattern.trim();
+    const routeMode = normalizeRouteMode(form.routeMode);
+    if (routeMode === 'explicit_group') {
+      if (!trimmedDisplayName) {
+        toast.error('请填写对外模型名');
+        return;
+      }
+      if (form.sourceRouteIds.length === 0) {
+        toast.error('请至少选择一个来源模型');
+        return;
+      }
+    } else {
+      if (!trimmedModelPattern) return;
+      const modelPatternError = getModelPatternError(form.modelPattern);
+      if (modelPatternError) {
+        toast.error(modelPatternError);
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       if (editingRouteId) {
         const currentRoute = routeSummaries.find((route) => route.id === editingRouteId) || null;
-        const modelPatternChanged = !!currentRoute && currentRoute.modelPattern !== trimmedModelPattern;
+        const modelPatternChanged = routeMode === 'pattern' && !!currentRoute && currentRoute.modelPattern !== trimmedModelPattern;
         await api.updateRoute(editingRouteId, {
-          modelPattern: trimmedModelPattern,
+          routeMode,
+          ...(routeMode === 'pattern' ? { modelPattern: trimmedModelPattern } : {}),
           displayName: trimmedDisplayName,
           displayIcon: trimmedDisplayIcon,
+          ...(routeMode === 'explicit_group' ? { sourceRouteIds: form.sourceRouteIds } : {}),
         });
-        toast.success(modelPatternChanged ? tr('群组已更新并重新匹配通道') : tr('群组已更新'));
+        toast.success(routeMode === 'pattern' && modelPatternChanged ? tr('群组已更新并重新匹配通道') : tr('群组已更新'));
       } else {
         await api.addRoute({
-          modelPattern: trimmedModelPattern,
+          routeMode,
+          ...(routeMode === 'pattern' ? { modelPattern: trimmedModelPattern } : {}),
           displayName: trimmedDisplayName,
           displayIcon: trimmedDisplayIcon,
+          ...(routeMode === 'explicit_group' ? { sourceRouteIds: form.sourceRouteIds } : {}),
         });
         toast.success(tr('群组已创建'));
       }
@@ -330,10 +377,14 @@ export default function TokenRoutes() {
 
   const handleEditRoute = (route: RouteSummaryRow) => {
     setEditingRouteId(route.id);
+    const routeMode = normalizeRouteMode(route.routeMode);
     setForm({
+      routeMode,
       modelPattern: route.modelPattern || '',
       displayName: route.displayName || '',
       displayIcon: normalizeRouteDisplayIconValue(route.displayIcon),
+      sourceRouteIds: routeMode === 'explicit_group' ? [...(route.sourceRouteIds || [])] : [],
+      advancedOpen: routeMode === 'pattern',
     });
     setShowManual(true);
   };
@@ -403,9 +454,9 @@ export default function TokenRoutes() {
 
   // Stable derived value: only changes when route patterns change (not on enabled toggle)
   const routePatterns = useMemo(
-    () => visibleRouteRows.map((r) => ({ id: r.id, modelPattern: r.modelPattern })),
+    () => visibleRouteRows.map((r) => ({ id: r.id, modelPattern: r.modelPattern, routeMode: r.routeMode })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleRouteRows.map((r) => `${r.id}:${r.modelPattern}`).join(',')],
+    [visibleRouteRows.map((r) => `${r.id}:${r.modelPattern}:${r.routeMode || 'pattern'}`).join(',')],
   );
 
   const routeBrandById = useMemo(() => {
@@ -541,7 +592,7 @@ export default function TokenRoutes() {
 
   const groupRouteList = useMemo<GroupRouteItem[]>(() => (
     listVisibleRoutes
-      .filter((route) => !isExactModelPattern(route.modelPattern))
+      .filter((route) => !isRouteExactModel(route))
       .map((route) => ({
         id: route.id,
         title: resolveRouteTitle(route),
@@ -577,7 +628,7 @@ export default function TokenRoutes() {
     let list = sortedRoutes;
 
     if (activeGroupFilter === '__all__') {
-      list = list.filter((route) => !isExactModelPattern(route.modelPattern));
+      list = list.filter((route) => !isRouteExactModel(route));
     } else if (typeof activeGroupFilter === 'number') {
       list = list.filter((route) => route.id === activeGroupFilter);
     }
@@ -749,7 +800,7 @@ export default function TokenRoutes() {
       );
 
       const route = routeSummaries.find((r) => r.id === routeId);
-      if (route && isExactModelPattern(route.modelPattern)) {
+      if (route && isRouteExactModel(route)) {
         try {
           const res = await api.getRouteDecision(route.modelPattern);
           setDecisionByRoute((prev) => ({
@@ -1008,20 +1059,13 @@ export default function TokenRoutes() {
 
           <button
             onClick={() => {
-              if (showManual) {
-                setShowManual(false);
-                resetRouteForm();
-                return;
-              }
-              setShowManual(true);
               resetRouteForm();
+              setShowManual(true);
             }}
             className="btn btn-ghost"
             style={{ border: '1px solid var(--color-border)', padding: '8px 14px' }}
           >
-            {editingRouteId
-              ? tr('取消编辑')
-              : (showManual ? tr('收起群组创建') : tr('新建群组'))}
+            {tr('新建群组')}
           </button>
 
           <button
@@ -1107,6 +1151,7 @@ export default function TokenRoutes() {
         canSave={canSaveRoute}
         routeIconSelectOptions={routeIconSelectOptions}
         previewModelSamples={previewModelSamples}
+        exactSourceRouteOptions={exactSourceRouteOptions}
         onSave={handleAddRoute}
         onCancel={handleCancelEditRoute}
       />

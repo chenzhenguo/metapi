@@ -7,11 +7,13 @@ import { join } from 'node:path';
 type DbModule = typeof import('../../db/index.js');
 type ProxyRouterModule = typeof import('./router.js');
 type TokenRouterModule = typeof import('../../services/tokenRouter.js');
+type TokensRoutesModule = typeof import('../api/tokens.js');
 
 describe('/v1/models route', () => {
   let db: DbModule['db'];
   let schema: DbModule['schema'];
   let proxyRoutes: ProxyRouterModule['proxyRoutes'];
+  let tokensRoutes: TokensRoutesModule['tokensRoutes'];
   let invalidateTokenRouterCache: TokenRouterModule['invalidateTokenRouterCache'];
   let app: FastifyInstance;
   let dataDir = '';
@@ -24,13 +26,16 @@ describe('/v1/models route', () => {
     const dbModule = await import('../../db/index.js');
     const proxyRouterModule = await import('./router.js');
     const tokenRouterModule = await import('../../services/tokenRouter.js');
+    const tokensRoutesModule = await import('../api/tokens.js');
 
     db = dbModule.db;
     schema = dbModule.schema;
     proxyRoutes = proxyRouterModule.proxyRoutes;
+    tokensRoutes = tokensRoutesModule.tokensRoutes;
     invalidateTokenRouterCache = tokenRouterModule.invalidateTokenRouterCache;
 
     app = Fastify();
+    await app.register(tokensRoutes);
     await app.register(proxyRoutes);
   });
 
@@ -270,6 +275,106 @@ describe('/v1/models route', () => {
       url: '/v1/models',
       headers: {
         authorization: 'Bearer sk-managed-group-only',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      object: 'list';
+      data: Array<{ id: string }>;
+    };
+
+    const ids = body.data.map((item) => item.id);
+    expect(ids).toContain('claude-opus-4-6');
+    expect(ids).not.toContain('claude-opus-4-5');
+    expect(ids).not.toContain('claude-sonnet-4-5');
+  });
+
+  it('returns only explicit-group public name while hiding source exact routes', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'explicit-group-site',
+      url: 'https://explicit-group.example.com',
+      platform: 'openai',
+      status: 'active',
+    }).returning().get();
+
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      accessToken: 'explicit-group-access-token',
+      status: 'active',
+    }).returning().get();
+
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id,
+      name: 'default',
+      token: 'explicit-group-api-token',
+      enabled: true,
+      isDefault: true,
+    }).returning().get();
+
+    await db.insert(schema.modelAvailability).values([
+      {
+        accountId: account.id,
+        modelName: 'claude-opus-4-5',
+        available: true,
+      },
+      {
+        accountId: account.id,
+        modelName: 'claude-sonnet-4-5',
+        available: true,
+      },
+    ]).run();
+
+    const sourceRouteA = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-opus-4-5',
+      enabled: true,
+    }).returning().get();
+    const sourceRouteB = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-sonnet-4-5',
+      enabled: true,
+    }).returning().get();
+
+    await db.insert(schema.routeChannels).values([
+      {
+        routeId: sourceRouteA.id,
+        accountId: account.id,
+        tokenId: token.id,
+        sourceModel: 'claude-opus-4-5',
+        enabled: true,
+      },
+      {
+        routeId: sourceRouteB.id,
+        accountId: account.id,
+        tokenId: token.id,
+        sourceModel: 'claude-sonnet-4-5',
+        enabled: true,
+      },
+    ]).run();
+
+    const groupResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [sourceRouteA.id, sourceRouteB.id],
+      },
+    });
+    expect(groupResponse.statusCode).toBe(200);
+    const groupId = (groupResponse.json() as { id: number }).id;
+
+    await db.insert(schema.downstreamApiKeys).values({
+      name: 'managed-explicit-group-key',
+      key: 'sk-managed-explicit-group',
+      enabled: true,
+      allowedRouteIds: JSON.stringify([groupId]),
+    }).run();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      headers: {
+        authorization: 'Bearer sk-managed-explicit-group',
       },
     });
 

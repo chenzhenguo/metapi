@@ -1,10 +1,11 @@
 import type { CSSProperties } from 'react';
 import { getBrand, normalizeBrandIconKey, type BrandInfo } from '../../components/BrandIcon.js';
-import type { RouteRow, RouteChannel, RouteDecisionCandidate, ChannelDecisionState, RouteSummaryRow } from './types.js';
+import type { RouteRow, RouteChannel, RouteDecisionCandidate, ChannelDecisionState, RouteSummaryRow, RouteMode } from './types.js';
 
 export const AUTO_ROUTE_DECISION_LIMIT = 80;
 export const ROUTE_RENDER_CHUNK = 40;
 export const ROUTE_BRAND_ICON_PREFIX = 'brand:';
+export const ROUTE_ICON_NONE_VALUE = '__route_icon_none__';
 
 export const ENDPOINT_TYPE_ICON_MODEL_MAP: Record<string, string> = {
   openai: 'chatgpt',
@@ -46,6 +47,18 @@ export function isExactModelPattern(modelPattern: string): boolean {
   if (!normalized) return false;
   if (isRegexModelPattern(normalized)) return false;
   return !/[\*\?]/.test(normalized);
+}
+
+export function normalizeRouteMode(routeMode: RouteMode | string | null | undefined): RouteMode {
+  return routeMode === 'explicit_group' ? 'explicit_group' : 'pattern';
+}
+
+export function isExplicitGroupRoute(route: Pick<RouteRow | RouteSummaryRow, 'routeMode'>): boolean {
+  return normalizeRouteMode(route.routeMode) === 'explicit_group';
+}
+
+export function isRouteExactModel(route: Pick<RouteRow | RouteSummaryRow, 'modelPattern' | 'routeMode'>): boolean {
+  return !isExplicitGroupRoute(route) && isExactModelPattern(route.modelPattern);
 }
 
 export function parseRegexModelPattern(modelPattern: string): { regex: RegExp | null; error: string | null } {
@@ -160,8 +173,13 @@ export function parseBrandIconValue(raw: string): string | null {
   return normalizeBrandIconKey(icon);
 }
 
+export function isRouteIconNoneValue(raw: string | null | undefined): boolean {
+  return (raw || '').trim() === ROUTE_ICON_NONE_VALUE;
+}
+
 export function normalizeRouteDisplayIconValue(raw: string | null | undefined): string {
   const normalized = (raw || '').trim();
+  if (isRouteIconNoneValue(normalized)) return ROUTE_ICON_NONE_VALUE;
   const brandIcon = parseBrandIconValue(normalized);
   if (brandIcon) return toBrandIconValue(brandIcon);
   return normalized;
@@ -200,9 +218,10 @@ export function siteAvatarLetters(siteName: string): string {
   return compact.slice(0, 2).toUpperCase();
 }
 
-export function resolveRouteIcon(route: Pick<RouteRow | RouteSummaryRow, 'displayIcon'>): { kind: 'none' } | { kind: 'text'; value: string } | { kind: 'brand'; value: string } {
+export function resolveRouteIcon(route: Pick<RouteRow | RouteSummaryRow, 'displayIcon'>): { kind: 'auto' } | { kind: 'none' } | { kind: 'text'; value: string } | { kind: 'brand'; value: string } {
   const icon = (route.displayIcon || '').trim();
-  if (!icon) return { kind: 'none' };
+  if (isRouteIconNoneValue(icon)) return { kind: 'none' };
+  if (!icon) return { kind: 'auto' };
   const brandIcon = parseBrandIconValue(icon);
   if (brandIcon) return { kind: 'brand', value: brandIcon };
   return { kind: 'text', value: icon };

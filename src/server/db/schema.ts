@@ -127,6 +127,7 @@ export const tokenRoutes = sqliteTable('token_routes', {
   modelPattern: text('model_pattern').notNull(),
   displayName: text('display_name'),
   displayIcon: text('display_icon'),
+  routeMode: text('route_mode').default('pattern'),
   modelMapping: text('model_mapping'), // JSON
   decisionSnapshot: text('decision_snapshot'), // JSON
   decisionRefreshedAt: text('decision_refreshed_at'),
@@ -137,6 +138,15 @@ export const tokenRoutes = sqliteTable('token_routes', {
 }, (table) => ({
   modelPatternIdx: index('token_routes_model_pattern_idx').on(table.modelPattern),
   enabledIdx: index('token_routes_enabled_idx').on(table.enabled),
+}));
+
+export const routeGroupSources = sqliteTable('route_group_sources', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  groupRouteId: integer('group_route_id').notNull().references(() => tokenRoutes.id, { onDelete: 'cascade' }),
+  sourceRouteId: integer('source_route_id').notNull().references(() => tokenRoutes.id, { onDelete: 'cascade' }),
+}, (table) => ({
+  groupSourceUnique: uniqueIndex('route_group_sources_group_source_unique').on(table.groupRouteId, table.sourceRouteId),
+  sourceRouteIdx: index('route_group_sources_source_route_id_idx').on(table.sourceRouteId),
 }));
 
 export const routeChannels = sqliteTable('route_channels', {

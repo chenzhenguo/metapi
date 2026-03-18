@@ -16,6 +16,7 @@ import { fuzzyMatch } from './helpers/fuzzySearch.js';
 import { clearAuthSession } from '../authSession.js';
 import { clearAppInstallationState } from '../appLocalState.js';
 import { tr } from '../i18n.js';
+import { ROUTE_ICON_NONE_VALUE } from './token-routes/utils.js';
 
 const PROXY_TOKEN_PREFIX = 'sk-';
 const ROUTE_BRAND_ICON_PREFIX = 'brand:';
@@ -1677,7 +1678,8 @@ export default function Settings() {
                         ) : filteredGroupRouteOptions.map((route) => {
                           const checked = downstreamCreate.selectedGroupRouteIds.includes(route.id);
                           const explicitBrandIcon = parseBrandIconValue(route.displayIcon);
-                          const textIcon = explicitBrandIcon ? '' : (route.displayIcon || '').trim();
+                          const explicitNoIcon = (route.displayIcon || '').trim() === ROUTE_ICON_NONE_VALUE;
+                          const textIcon = explicitBrandIcon || explicitNoIcon ? '' : (route.displayIcon || '').trim();
                           return (
                             <label
                               key={route.id}
@@ -1740,7 +1742,7 @@ export default function Settings() {
                                       />
                                     ) : textIcon ? (
                                       textIcon
-                                    ) : (
+                                    ) : explicitNoIcon ? null : (
                                       <InlineBrandIcon model={resolveRouteBrandSource(route)} size={18} />
                                     )}
                                   </span>

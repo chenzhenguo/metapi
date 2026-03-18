@@ -149,4 +149,180 @@ describe('PUT /api/routes/:id route rebuild', () => {
     expect(rebuiltAuto?.priority).toBe(0);
     expect(rebuiltAuto?.weight).toBe(10);
   });
+
+  it('creates explicit-group routes with sourceRouteIds and aggregates source channels', async () => {
+    const sourceA = await seedAccountWithToken('claude-opus-4-5');
+    const sourceB = await seedAccountWithToken('claude-sonnet-4-5');
+
+    const exactRouteA = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-opus-4-5',
+      enabled: true,
+    }).returning().get();
+    const exactRouteB = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-sonnet-4-5',
+      enabled: true,
+    }).returning().get();
+
+    await db.insert(schema.routeChannels).values([
+      {
+        routeId: exactRouteA.id,
+        accountId: sourceA.account.id,
+        tokenId: sourceA.token.id,
+        sourceModel: 'claude-opus-4-5',
+        priority: 0,
+        weight: 10,
+        enabled: true,
+        manualOverride: false,
+      },
+      {
+        routeId: exactRouteB.id,
+        accountId: sourceB.account.id,
+        tokenId: sourceB.token.id,
+        sourceModel: 'claude-sonnet-4-5',
+        priority: 1,
+        weight: 8,
+        enabled: true,
+        manualOverride: false,
+      },
+    ]).run();
+
+    const createResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [exactRouteA.id, exactRouteB.id],
+        routingStrategy: 'weighted',
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(200);
+    expect(createResponse.json()).toMatchObject({
+      displayName: 'claude-opus-4-6',
+      routeMode: 'explicit_group',
+      sourceRouteIds: [exactRouteA.id, exactRouteB.id],
+    });
+
+    const createdRouteId = (createResponse.json() as { id: number }).id;
+
+    const storedChannels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, createdRouteId))
+      .all();
+    expect(storedChannels).toHaveLength(0);
+
+    const summaryResponse = await app.inject({
+      method: 'GET',
+      url: '/api/routes/summary',
+    });
+    expect(summaryResponse.statusCode).toBe(200);
+    expect(summaryResponse.json()).toContainEqual(expect.objectContaining({
+      id: createdRouteId,
+      routeMode: 'explicit_group',
+      sourceRouteIds: [exactRouteA.id, exactRouteB.id],
+      channelCount: 2,
+      enabledChannelCount: 2,
+      siteNames: expect.arrayContaining([sourceA.site.name, sourceB.site.name]),
+    }));
+
+    const channelsResponse = await app.inject({
+      method: 'GET',
+      url: `/api/routes/${createdRouteId}/channels`,
+    });
+    expect(channelsResponse.statusCode).toBe(200);
+    expect(channelsResponse.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        routeId: exactRouteA.id,
+        accountId: sourceA.account.id,
+        sourceModel: 'claude-opus-4-5',
+      }),
+      expect.objectContaining({
+        routeId: exactRouteB.id,
+        accountId: sourceB.account.id,
+        sourceModel: 'claude-sonnet-4-5',
+      }),
+    ]));
+  });
+
+  it('rejects invalid explicit-group payloads', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        routeMode: 'explicit_group',
+        displayName: '',
+        sourceRouteIds: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      success: false,
+    });
+  });
+
+  it('prefers an exact route over a colliding explicit-group display name', async () => {
+    const exactCandidate = await seedAccountWithToken('claude-opus-4-6');
+    const groupedCandidate = await seedAccountWithToken('claude-opus-4-5');
+
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-opus-4-6',
+      enabled: true,
+    }).returning().get();
+    const sourceRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'claude-opus-4-5',
+      enabled: true,
+    }).returning().get();
+
+    await db.insert(schema.routeChannels).values([
+      {
+        routeId: exactRoute.id,
+        accountId: exactCandidate.account.id,
+        tokenId: exactCandidate.token.id,
+        sourceModel: 'claude-opus-4-6',
+        priority: 0,
+        weight: 10,
+        enabled: true,
+        manualOverride: false,
+      },
+      {
+        routeId: sourceRoute.id,
+        accountId: groupedCandidate.account.id,
+        tokenId: groupedCandidate.token.id,
+        sourceModel: 'claude-opus-4-5',
+        priority: 0,
+        weight: 10,
+        enabled: true,
+        manualOverride: false,
+      },
+    ]).run();
+
+    const groupResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        routeMode: 'explicit_group',
+        displayName: 'claude-opus-4-6',
+        sourceRouteIds: [sourceRoute.id],
+      },
+    });
+
+    expect(groupResponse.statusCode).toBe(200);
+
+    const decisionResponse = await app.inject({
+      method: 'GET',
+      url: '/api/routes/decision?model=claude-opus-4-6',
+    });
+
+    expect(decisionResponse.statusCode).toBe(200);
+    expect(decisionResponse.json()).toMatchObject({
+      success: true,
+      decision: {
+        matched: true,
+        routeId: exactRoute.id,
+        modelPattern: 'claude-opus-4-6',
+        actualModel: 'claude-opus-4-6',
+      },
+    });
+  });
 });

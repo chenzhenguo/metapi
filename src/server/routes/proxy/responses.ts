@@ -204,6 +204,9 @@ export async function responsesProxyRoute(app: FastifyInstance) {
         model: modelName,
         stream: isStream,
       };
+      if (body.generate === false) {
+        normalizedResponsesBody.generate = false;
+      }
       if (owner) {
         try {
           normalizedResponsesBody = await resolveResponsesBodyInputFiles(normalizedResponsesBody, owner);
@@ -446,6 +449,9 @@ export async function responsesProxyRoute(app: FastifyInstance) {
           const streamSession = openAiResponsesTransformer.proxyStream.createSession({
             modelName,
             successfulUpstreamPath,
+            strictTerminalEvents: Object.entries(request.headers as Record<string, unknown>)
+              .some(([rawKey, rawValue]) => rawKey.trim().toLowerCase() === 'x-metapi-responses-websocket-transport'
+                && String(rawValue).trim() === '1'),
             getUsage: () => parsedUsage,
             onParsedPayload: (payload) => {
               if (payload && typeof payload === 'object') {

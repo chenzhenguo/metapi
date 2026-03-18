@@ -28,6 +28,7 @@ describe('backupService', () => {
 
   beforeEach(async () => {
     await db.delete(schema.routeChannels).run();
+    await db.delete(schema.routeGroupSources).run();
     await db.delete(schema.tokenRoutes).run();
     await db.delete(schema.tokenModelAvailability).run();
     await db.delete(schema.modelAvailability).run();
@@ -96,15 +97,33 @@ describe('backupService', () => {
       updatedAt: now,
     }).returning().get();
 
+    const sourceRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-source-*',
+      displayName: 'gpt-source',
+      routeMode: 'pattern',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    }).returning().get();
+
     const route = await db.insert(schema.tokenRoutes).values({
       modelPattern: 'gpt-*',
       displayName: 'gpt-route',
       displayIcon: 'icon-gpt',
       modelMapping: JSON.stringify({ to: 'gpt-4o-mini' }),
+      routeMode: 'explicit_group',
+      decisionSnapshot: JSON.stringify({ channelIds: [1, 2] }),
+      decisionRefreshedAt: now,
+      routingStrategy: 'round_robin',
       enabled: true,
       createdAt: now,
       updatedAt: now,
     }).returning().get();
+
+    await db.insert(schema.routeGroupSources).values({
+      groupRouteId: route.id,
+      sourceRouteId: sourceRoute.id,
+    }).run();
 
     await db.insert(schema.routeChannels).values({
       routeId: route.id,
@@ -150,6 +169,12 @@ describe('backupService', () => {
 
     expect(restoredRoute?.displayName).toBe('gpt-route');
     expect(restoredRoute?.displayIcon).toBe('icon-gpt');
+    expect(restoredRoute?.routeMode).toBe('explicit_group');
+    expect(restoredRoute?.decisionSnapshot).toBe('{"channelIds":[1,2]}');
+    expect(restoredRoute?.decisionRefreshedAt).toBe(now);
+    expect(restoredRoute?.routingStrategy).toBe('round_robin');
+    const restoredGroupSource = await db.select().from(schema.routeGroupSources).where(eq(schema.routeGroupSources.groupRouteId, route.id)).get();
+    expect(restoredGroupSource?.sourceRouteId).toBe(sourceRoute.id);
 
     expect(restoredChannel?.sourceModel).toBe('gpt-4o');
   });

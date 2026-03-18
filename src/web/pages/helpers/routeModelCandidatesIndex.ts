@@ -32,6 +32,7 @@ export type RouteCandidateView = {
 export type RouteModelPatternLike = {
   id: number;
   modelPattern: string;
+  routeMode?: string | null;
 };
 
 const EMPTY_ROUTE_CANDIDATE_VIEW: RouteCandidateView = {
@@ -48,6 +49,10 @@ export function buildRouteModelCandidatesIndex(
   const index: Record<number, RouteCandidateView> = {};
 
   for (const route of routes || []) {
+    if (route.routeMode === 'explicit_group') {
+      index[route.id] = EMPTY_ROUTE_CANDIDATE_VIEW;
+      continue;
+    }
     const modelPattern = (route.modelPattern || '').trim();
     if (!modelPattern) {
       index[route.id] = EMPTY_ROUTE_CANDIDATE_VIEW;

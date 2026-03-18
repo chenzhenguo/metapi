@@ -853,6 +853,7 @@ describe('convertResponsesBodyToOpenAiBody', () => {
       model: 'gpt-5',
       input: 'hello',
       stream: true,
+      parallel_tool_calls: true,
       include: ['reasoning.encrypted_content'],
       reasoning: {
         effort: 'high',
@@ -864,12 +865,20 @@ describe('convertResponsesBodyToOpenAiBody', () => {
       prompt_cache_retention: { scope: 'workspace' },
       background: true,
       top_logprobs: 2,
+      previous_response_id: 'resp_prev_9',
+      truncation: 'auto',
+      service_tier: 'priority',
+      text: {
+        verbosity: 'high',
+      },
     });
 
     expect(candidates).toContainEqual({
       model: 'gpt-5',
       input: 'hello',
       stream: true,
+      parallel_tool_calls: true,
+      include: ['reasoning.encrypted_content'],
       reasoning: {
         effort: 'high',
         summary: 'auto',
@@ -880,6 +889,12 @@ describe('convertResponsesBodyToOpenAiBody', () => {
       prompt_cache_retention: { scope: 'workspace' },
       background: true,
       top_logprobs: 2,
+      previous_response_id: 'resp_prev_9',
+      truncation: 'auto',
+      service_tier: 'priority',
+      text: {
+        verbosity: 'high',
+      },
     });
   });
 

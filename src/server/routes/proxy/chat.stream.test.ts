@@ -1385,6 +1385,15 @@ describe('chat proxy stream behavior', () => {
         headers: { 'content-type': 'application/json' },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: {
+          message: 'request validation failed',
+          type: 'invalid_request_error',
+        },
+      }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
         id: 'resp_retry_minimal_headers',
         object: 'response',
         status: 'completed',
@@ -1413,21 +1422,27 @@ describe('chat proxy stream behavior', () => {
     const body = response.json();
     expect(body.output_text).toContain('ok after minimal headers retry');
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     const [, firstOptions] = fetchMock.mock.calls[0] as [string, any];
     const [, secondOptions] = fetchMock.mock.calls[1] as [string, any];
     const [, thirdOptions] = fetchMock.mock.calls[2] as [string, any];
+    const [, fourthOptions] = fetchMock.mock.calls[3] as [string, any];
 
     expect(firstOptions.headers['openai-beta']).toBe('responses-2025-03-11');
     expect(secondOptions.headers['openai-beta']).toBe('responses-2025-03-11');
-    expect(thirdOptions.headers['openai-beta']).toBeUndefined();
+    expect(thirdOptions.headers['openai-beta']).toBe('responses-2025-03-11');
+    expect(fourthOptions.headers['openai-beta']).toBeUndefined();
 
     const firstBody = JSON.parse(firstOptions.body);
     const secondBody = JSON.parse(secondOptions.body);
     const thirdBody = JSON.parse(thirdOptions.body);
+    const fourthBody = JSON.parse(fourthOptions.body);
     expect(firstBody.user).toBe('user-123');
     expect(secondBody.user).toBeUndefined();
     expect(thirdBody.user).toBeUndefined();
+    expect(secondBody.include).toEqual(['reasoning.encrypted_content']);
+    expect(thirdBody.include).toBeUndefined();
+    expect(fourthBody.user).toBeUndefined();
   });
 
   it('returns concise Cloudflare host error on /v1/responses 502 html failures', async () => {

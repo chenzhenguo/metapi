@@ -1,4 +1,4 @@
-﻿import { eq } from 'drizzle-orm';
+﻿import { eq, inArray } from 'drizzle-orm';
 import { minimatch } from 'minimatch';
 import { db, schema } from '../db/index.js';
 import { config } from '../config.js';
@@ -13,7 +13,7 @@ import { isUsableAccountToken } from './accountTokenService.js';
 import { getOauthInfoFromExtraConfig } from './oauth/oauthAccount.js';
 
 interface RouteMatch {
-  route: typeof schema.tokenRoutes.$inferSelect;
+  route: RouteRow;
   channels: Array<{
     channel: typeof schema.routeChannels.$inferSelect;
     account: typeof schema.accounts.$inferSelect;
@@ -43,6 +43,7 @@ const FAILURE_BACKOFF_BASE_SEC = 15;
 const MIN_EFFECTIVE_UNIT_COST = 1e-6;
 const ROUND_ROBIN_FAILURE_THRESHOLD = 3;
 const ROUND_ROBIN_COOLDOWN_LEVELS_SEC = [0, 10 * 60, 60 * 60, 24 * 60 * 60] as const;
+const MAX_ROUTE_REGEX_BODY_LENGTH = 256;
 
 function fibonacciNumber(index: number): number {
   if (index <= 2) return 1;
@@ -66,7 +67,11 @@ function resolveRoundRobinCooldownSec(level: number): number {
   return ROUND_ROBIN_COOLDOWN_LEVELS_SEC[normalizedLevel] ?? 0;
 }
 
-type RouteRow = typeof schema.tokenRoutes.$inferSelect;
+type RouteMode = 'pattern' | 'explicit_group';
+type RouteRow = typeof schema.tokenRoutes.$inferSelect & {
+  routeMode: RouteMode;
+  sourceRouteIds: number[];
+};
 type ChannelRow = typeof schema.routeChannels.$inferSelect;
 
 type RouteCacheSnapshot = {
@@ -100,9 +105,29 @@ async function loadEnabledRoutes(nowMs = Date.now()): Promise<RouteRow[]> {
     return routeCacheSnapshot.routes;
   }
 
-  const routes = await db.select().from(schema.tokenRoutes)
+  const rawRoutes = await db.select().from(schema.tokenRoutes)
     .where(eq(schema.tokenRoutes.enabled, true))
     .all();
+  const explicitGroupRouteIds = rawRoutes
+    .filter((route) => normalizeRouteMode(route.routeMode) === 'explicit_group')
+    .map((route) => route.id);
+  const sourceRows = explicitGroupRouteIds.length > 0
+    ? await db.select().from(schema.routeGroupSources)
+      .where(inArray(schema.routeGroupSources.groupRouteId, explicitGroupRouteIds))
+      .all()
+    : [];
+  const sourceIdsByRouteId = new Map<number, number[]>();
+  for (const row of sourceRows) {
+    if (!sourceIdsByRouteId.has(row.groupRouteId)) {
+      sourceIdsByRouteId.set(row.groupRouteId, []);
+    }
+    sourceIdsByRouteId.get(row.groupRouteId)!.push(row.sourceRouteId);
+  }
+  const routes = rawRoutes.map((route) => ({
+    ...route,
+    routeMode: normalizeRouteMode(route.routeMode),
+    sourceRouteIds: Array.from(new Set(sourceIdsByRouteId.get(route.id) ?? [])),
+  }));
   routeCacheSnapshot = {
     loadedAt: nowMs,
     routes,
@@ -116,14 +141,31 @@ async function loadRouteMatch(route: RouteRow, nowMs = Date.now()): Promise<Rout
     return cached.match;
   }
 
-  const channels = await db
-    .select()
-    .from(schema.routeChannels)
-    .innerJoin(schema.accounts, eq(schema.routeChannels.accountId, schema.accounts.id))
-    .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-    .leftJoin(schema.accountTokens, eq(schema.routeChannels.tokenId, schema.accountTokens.id))
-    .where(eq(schema.routeChannels.routeId, route.id))
-    .all();
+  const routeIds = (() => {
+    if (!isExplicitGroupRoute(route)) {
+      return [route.id];
+    }
+    return Array.from(new Set(route.sourceRouteIds.filter((routeId) => Number.isFinite(routeId) && routeId > 0)));
+  })();
+  const enabledSourceRouteIds = isExplicitGroupRoute(route)
+    ? (await loadEnabledRoutes(nowMs))
+      .filter((item) => (
+        routeIds.includes(item.id)
+        && !isExplicitGroupRoute(item)
+        && isExactRouteModelPattern(item.modelPattern)
+      ))
+      .map((item) => item.id)
+    : routeIds;
+  const channels = enabledSourceRouteIds.length > 0
+    ? await db
+      .select()
+      .from(schema.routeChannels)
+      .innerJoin(schema.accounts, eq(schema.routeChannels.accountId, schema.accounts.id))
+      .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+      .leftJoin(schema.accountTokens, eq(schema.routeChannels.tokenId, schema.accountTokens.id))
+      .where(inArray(schema.routeChannels.routeId, enabledSourceRouteIds))
+      .all()
+    : [];
 
   const mapped = channels.map((row) => ({
     channel: row.route_channels,
@@ -248,10 +290,121 @@ export function isRegexModelPattern(pattern: string): boolean {
   return pattern.trim().toLowerCase().startsWith('re:');
 }
 
+function readRegexQuantifierLength(pattern: string, startIndex: number): number {
+  const ch = pattern[startIndex];
+  if (ch === '*' || ch === '+' || ch === '?') return 1;
+  if (ch !== '{') return 0;
+
+  let index = startIndex + 1;
+  let sawDigit = false;
+  while (index < pattern.length && /\d/.test(pattern[index])) {
+    sawDigit = true;
+    index += 1;
+  }
+  if (!sawDigit) return 0;
+
+  if (pattern[index] === ',') {
+    index += 1;
+    while (index < pattern.length && /\d/.test(pattern[index])) {
+      index += 1;
+    }
+  }
+
+  if (pattern[index] !== '}') return 0;
+  return index - startIndex + 1;
+}
+
+function isSafeRegexPatternBody(body: string): boolean {
+  if (!body || body.length > MAX_ROUTE_REGEX_BODY_LENGTH) return false;
+  if (!/^[a-z0-9\s.^$|()[\]{}+*?\\:_/-]+$/i.test(body)) return false;
+  if (body.includes('(?=') || body.includes('(?!') || body.includes('(?<=') || body.includes('(?<!') || body.includes('(?<')) {
+    return false;
+  }
+  if (/(^|[^\\])\\[1-9]/.test(body)) {
+    return false;
+  }
+
+  const groupStack: Array<{ hasInnerQuantifier: boolean; hasAlternation: boolean }> = [];
+  let escaped = false;
+  let inCharClass = false;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const ch = body[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (inCharClass) {
+      if (ch === ']') inCharClass = false;
+      continue;
+    }
+
+    if (ch === '[') {
+      inCharClass = true;
+      continue;
+    }
+
+    if (ch === '(') {
+      if (body[index + 1] === '?') {
+        if (body[index + 2] !== ':') {
+          return false;
+        }
+        groupStack.push({ hasInnerQuantifier: false, hasAlternation: false });
+        index += 2;
+        continue;
+      }
+
+      groupStack.push({ hasInnerQuantifier: false, hasAlternation: false });
+      continue;
+    }
+
+    if (ch === '|') {
+      if (groupStack.length > 0) {
+        groupStack[groupStack.length - 1].hasAlternation = true;
+      }
+      continue;
+    }
+
+    if (ch === ')') {
+      const group = groupStack.pop();
+      if (!group) return false;
+
+      const quantifierLength = readRegexQuantifierLength(body, index + 1);
+      if (quantifierLength > 0 && (group.hasInnerQuantifier || group.hasAlternation)) {
+        return false;
+      }
+
+      const parent = groupStack[groupStack.length - 1];
+      if (parent && (group.hasInnerQuantifier || quantifierLength > 0)) {
+        parent.hasInnerQuantifier = true;
+      }
+      continue;
+    }
+
+    const quantifierLength = readRegexQuantifierLength(body, index);
+    if (quantifierLength > 0) {
+      if (groupStack.length > 0) {
+        groupStack[groupStack.length - 1].hasInnerQuantifier = true;
+      }
+      index += quantifierLength - 1;
+    }
+  }
+
+  return !escaped && !inCharClass && groupStack.length === 0;
+}
+
 export function parseRegexModelPattern(pattern: string): RegExp | null {
   if (!isRegexModelPattern(pattern)) return null;
   const body = pattern.trim().slice(3).trim();
   if (!body) return null;
+  if (!isSafeRegexPatternBody(body)) return null;
   try {
     return new RegExp(body);
   } catch {
@@ -280,6 +433,14 @@ function isExactRouteModelPattern(pattern: string): boolean {
   return !/[\*\?\[]/.test(normalizedPattern);
 }
 
+function normalizeRouteMode(routeMode: string | null | undefined): RouteMode {
+  return routeMode === 'explicit_group' ? 'explicit_group' : 'pattern';
+}
+
+function isExplicitGroupRoute(route: Pick<RouteRow, 'routeMode'> | Pick<typeof schema.tokenRoutes.$inferSelect, 'routeMode'>): boolean {
+  return normalizeRouteMode(route.routeMode) === 'explicit_group';
+}
+
 function normalizeRouteDisplayName(displayName: string | null | undefined): string {
   return (displayName || '').trim();
 }
@@ -289,12 +450,60 @@ function isRouteDisplayNameMatch(model: string, displayName: string | null | und
   return !!alias && alias === model;
 }
 
-function matchesRouteRequestModel(model: string, route: typeof schema.tokenRoutes.$inferSelect): boolean {
+function matchesRouteRequestModel(model: string, route: RouteRow): boolean {
+  if (isExplicitGroupRoute(route)) {
+    return isRouteDisplayNameMatch(model, route.displayName);
+  }
   return matchesModelPattern(model, route.modelPattern) || isRouteDisplayNameMatch(model, route.displayName);
 }
 
-function getExposedModelNameForRoute(route: typeof schema.tokenRoutes.$inferSelect): string {
+function getExposedModelNameForRoute(route: RouteRow): string {
   return normalizeRouteDisplayName(route.displayName) || route.modelPattern;
+}
+
+function hasCustomDisplayName(route: Pick<RouteRow, 'modelPattern' | 'displayName'>): boolean {
+  const displayName = normalizeRouteDisplayName(route.displayName);
+  const modelPattern = (route.modelPattern || '').trim();
+  return !!displayName && displayName !== modelPattern;
+}
+
+function buildVisibleEnabledRoutes(routes: RouteRow[]): RouteRow[] {
+  const exactModelNames = new Set(
+    routes
+      .filter((route) => !isExplicitGroupRoute(route) && isExactRouteModelPattern(route.modelPattern))
+      .map((route) => (route.modelPattern || '').trim())
+      .filter(Boolean),
+  );
+  const coveringGroups = routes.filter((route) => (
+    route.enabled
+    && (
+      (isExplicitGroupRoute(route) && normalizeRouteDisplayName(route.displayName).length > 0 && route.sourceRouteIds.length > 0)
+      || (!isExplicitGroupRoute(route) && !isExactRouteModelPattern(route.modelPattern) && hasCustomDisplayName(route))
+    )
+  ));
+
+  if (coveringGroups.length === 0) return routes;
+
+  return routes.filter((route) => {
+    if (isExplicitGroupRoute(route)) {
+      return normalizeRouteDisplayName(route.displayName).length > 0;
+    }
+    if (!isExactRouteModelPattern(route.modelPattern)) return true;
+    if (hasCustomDisplayName(route)) return true;
+
+    const exactModel = (route.modelPattern || '').trim();
+    if (!exactModel) return true;
+
+    return !coveringGroups.some((groupRoute) => {
+      if (groupRoute.id === route.id) return false;
+      const groupDisplayName = normalizeRouteDisplayName(groupRoute.displayName);
+      if (!groupDisplayName || exactModelNames.has(groupDisplayName)) return false;
+      if (isExplicitGroupRoute(groupRoute)) {
+        return groupRoute.sourceRouteIds.includes(route.id);
+      }
+      return matchesModelPattern(exactModel, groupRoute.modelPattern);
+    });
+  });
 }
 
 function normalizeModelAlias(modelName: string): string {
@@ -367,7 +576,7 @@ function normalizeChannelSourceModel(channelSourceModel: string | null | undefin
 
 function resolveActualModelForSelectedChannel(
   requestedModel: string,
-  route: typeof schema.tokenRoutes.$inferSelect,
+  route: RouteRow,
   mappedModel: string,
   channelSourceModel: string | null | undefined,
 ): string {
@@ -378,7 +587,7 @@ function resolveActualModelForSelectedChannel(
   return mappedModel;
 }
 
-function resolveRouteStrategy(route: typeof schema.tokenRoutes.$inferSelect): RouteRoutingStrategy {
+function resolveRouteStrategy(route: RouteRow): RouteRoutingStrategy {
   return normalizeRouteRoutingStrategy(route.routingStrategy);
 }
 
@@ -449,6 +658,17 @@ export class TokenRouter {
     const match = await this.findRoute(requestedModel, downstreamPolicy);
     if (!match) return null;
     return await this.selectFromMatch(match, requestedModel, downstreamPolicy);
+  }
+
+  async previewSelectedChannel(
+    requestedModel: string,
+    downstreamPolicy: DownstreamRoutingPolicy = DEFAULT_DOWNSTREAM_POLICY,
+  ): Promise<SelectedChannel | null> {
+    if (!isModelAllowedByDownstreamPolicy(requestedModel, downstreamPolicy)) return null;
+
+    const match = await this.findRoute(requestedModel, downstreamPolicy);
+    if (!match) return null;
+    return await this.selectFromMatch(match, requestedModel, downstreamPolicy, [], false);
   }
 
   /**
@@ -893,7 +1113,7 @@ export class TokenRouter {
    */
   async getAvailableModels(): Promise<string[]> {
     const routes = await loadEnabledRoutes();
-    const exposed = routes
+    const exposed = buildVisibleEnabledRoutes(routes)
       .map((route) => getExposedModelNameForRoute(route).trim())
       .filter((name) => name.length > 0);
     return Array.from(new Set(exposed));
@@ -906,6 +1126,7 @@ export class TokenRouter {
     requestedModel: string,
     downstreamPolicy: DownstreamRoutingPolicy,
     excludeChannelIds: number[] = [],
+    recordSelection = true,
   ): Promise<SelectedChannel | null> {
     const mappedModel = resolveMappedModel(requestedModel, match.route.modelMapping);
     const requestedByDisplayName = isRouteDisplayNameMatch(requestedModel, match.route.displayName);
@@ -931,7 +1152,9 @@ export class TokenRouter {
 
       const tokenValue = this.resolveChannelTokenValue(selected);
       if (!tokenValue) return null;
-      await this.recordChannelSelection(selected.channel.id);
+      if (recordSelection) {
+        await this.recordChannelSelection(selected.channel.id);
+      }
 
       const actualModel = resolveActualModelForSelectedChannel(
         requestedModel,
@@ -1003,11 +1226,13 @@ export class TokenRouter {
     }
 
     const matchedRoute = routes.find((route) => (
-      isExactRouteModelPattern(route.modelPattern)
+      !isExplicitGroupRoute(route)
+      && isExactRouteModelPattern(route.modelPattern)
       && (route.modelPattern || '').trim() === model
     ))
-      || routes.find((route) => isRouteDisplayNameMatch(model, route.displayName))
-      || routes.find((route) => matchesModelPattern(model, route.modelPattern));
+      || routes.find((route) => isExplicitGroupRoute(route) && isRouteDisplayNameMatch(model, route.displayName))
+      || routes.find((route) => !isExplicitGroupRoute(route) && isRouteDisplayNameMatch(model, route.displayName))
+      || routes.find((route) => !isExplicitGroupRoute(route) && matchesModelPattern(model, route.modelPattern));
 
     if (!matchedRoute) return null;
 
@@ -1025,7 +1250,7 @@ export class TokenRouter {
     return await this.loadRouteMatch(route);
   }
 
-  private async loadRouteMatch(route: typeof schema.tokenRoutes.$inferSelect): Promise<RouteMatch> {
+  private async loadRouteMatch(route: RouteRow): Promise<RouteMatch> {
     return await loadRouteMatch(route);
   }
 

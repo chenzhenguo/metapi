@@ -225,7 +225,20 @@ describe('databaseMigrationService', () => {
         checkinLogs: [],
         modelAvailability: [],
         tokenModelAvailability: [],
-        tokenRoutes: [],
+        tokenRoutes: [{
+          id: 10,
+          modelPattern: 'claude-opus-4-6',
+          displayName: 'claude-opus-4-6',
+          displayIcon: 'icon-claude',
+          modelMapping: null,
+          routeMode: 'explicit_group',
+          decisionSnapshot: '{"channels":[1]}',
+          decisionRefreshedAt: '2026-03-14T01:30:00.000Z',
+          routingStrategy: 'round_robin',
+          enabled: true,
+          createdAt: '2026-03-14T00:00:00.000Z',
+          updatedAt: '2026-03-14T01:00:00.000Z',
+        }],
         routeChannels: [],
         proxyLogs: [],
         proxyVideoTasks: [{
@@ -260,6 +273,11 @@ describe('databaseMigrationService', () => {
           updatedAt: '2026-03-14T01:00:00.000Z',
           deletedAt: null,
         }],
+        routeGroupSources: [{
+          id: 9,
+          groupRouteId: 12,
+          sourceRouteId: 13,
+        }],
         downstreamApiKeys: [],
         events: [],
       },
@@ -271,5 +289,10 @@ describe('databaseMigrationService', () => {
     expect(statements.some((statement) => statement.table === 'site_disabled_models')).toBe(true);
     expect(statements.some((statement) => statement.table === 'proxy_video_tasks')).toBe(true);
     expect(statements.some((statement) => statement.table === 'proxy_files')).toBe(true);
+    expect(statements.some((statement) => statement.table === 'route_group_sources')).toBe(true);
+    const tokenRouteStatement = statements.find((statement) => statement.table === 'token_routes');
+    const routeModeIndex = tokenRouteStatement?.columns.indexOf('route_mode') ?? -1;
+    expect(routeModeIndex).toBeGreaterThanOrEqual(0);
+    expect(tokenRouteStatement?.values[routeModeIndex]).toBe('explicit_group');
   });
 });

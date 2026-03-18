@@ -274,6 +274,14 @@ function markMigrationRecordIfMissing(sqlite: Database.Database, record: Migrati
   return true;
 }
 
+function hasMigrationRecord(sqlite: Database.Database, record: MigrationRecord): boolean {
+  if (!tableExists(sqlite, '__drizzle_migrations')) return false;
+  const row = sqlite
+    .prepare('SELECT 1 FROM "__drizzle_migrations" WHERE "hash" = ? LIMIT 1')
+    .get(record.hash);
+  return !!row;
+}
+
 function normalizeSchemaErrorMessage(error: unknown): string {
   if (!error || typeof error !== 'object') {
     return String(error || '');
@@ -332,25 +340,28 @@ function isSitesPlatformUrlUniqueConflictError(error: unknown): boolean {
     === normalizeSqlForMatch('CREATE UNIQUE INDEX `sites_platform_url_unique` ON `sites` (`platform`,`url`);');
 }
 
-function getLatestRecordedMigrationCreatedAt(sqlite: Database.Database): number | null {
-  if (!tableExists(sqlite, '__drizzle_migrations')) return null;
-  const row = sqlite
-    .prepare('SELECT created_at FROM "__drizzle_migrations" ORDER BY created_at DESC LIMIT 1')
-    .get() as { created_at?: number } | undefined;
-  if (!row || row.created_at === undefined || row.created_at === null) {
-    return null;
-  }
-  return Number(row.created_at);
-}
-
 function replayMigrationStatements(sqlite: Database.Database, statements: string[]): void {
   for (const statement of statements) {
     try {
       sqlite.exec(statement);
     } catch (error) {
-      if (!isRecoverableSchemaConflictError(error)) {
-        throw error;
+      if (isRecoverableSchemaConflictError(error)) {
+        continue;
       }
+
+      if (isSitesPlatformUrlUniqueConflictError(error) && deduplicateLegacySitesForUniqueIndex(sqlite)) {
+        try {
+          sqlite.exec(statement);
+          continue;
+        } catch (retryError) {
+          if (isRecoverableSchemaConflictError(retryError)) {
+            continue;
+          }
+          throw retryError;
+        }
+      }
+
+      throw error;
     }
   }
 }
@@ -366,18 +377,38 @@ function recoverMigrationSequence(
     return false;
   }
 
-  let latestRecordedCreatedAt = getLatestRecordedMigrationCreatedAt(sqlite);
   for (const migration of migrations.slice(0, failedMigrationIndex + 1)) {
-    if (latestRecordedCreatedAt !== null && latestRecordedCreatedAt >= migration.createdAt) {
+    if (hasMigrationRecord(sqlite, migration)) {
       continue;
     }
 
     replayMigrationStatements(sqlite, migration.statements);
     markMigrationRecordIfMissing(sqlite, migration);
-    latestRecordedCreatedAt = migration.createdAt;
   }
 
   return true;
+}
+
+function backfillMissingRecordedMigrations(sqlite: Database.Database, migrationsFolder: string): number {
+  if (!tableExists(sqlite, '__drizzle_migrations')) return 0;
+
+  let recoveredCount = 0;
+  for (const migration of readRecoveryMigrations(migrationsFolder)) {
+    if (hasMigrationRecord(sqlite, migration)) {
+      continue;
+    }
+
+    replayMigrationStatements(sqlite, migration.statements);
+    if (markMigrationRecordIfMissing(sqlite, migration)) {
+      recoveredCount += 1;
+    }
+  }
+
+  if (recoveredCount > 0) {
+    console.warn(`[db] Backfilled ${recoveredCount} missing drizzle migration record(s).`);
+  }
+
+  return recoveredCount;
 }
 
 function tryRecoverDuplicateColumnMigrationError(
@@ -557,6 +588,7 @@ export function runSqliteMigrations(): void {
 
   const sqlite = new Database(dbPath);
   bootstrapLegacyDrizzleMigrations(sqlite, migrationsFolder);
+  backfillMissingRecordedMigrations(sqlite, migrationsFolder);
 
   try {
     migrate(drizzle(sqlite), { migrationsFolder });

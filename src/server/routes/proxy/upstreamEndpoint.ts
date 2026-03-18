@@ -470,6 +470,9 @@ function convertCodexSystemRoleToDeveloper(input: unknown): unknown {
 function applyCodexResponsesCompatibility(
   body: Record<string, unknown>,
   sitePlatform: string,
+  options?: {
+    preservePreviousResponseId?: boolean;
+  },
 ): Record<string, unknown> {
   if (sitePlatform !== 'codex') return body;
 
@@ -494,11 +497,13 @@ function applyCodexResponsesCompatibility(
     'truncation',
     'user',
     'context_management',
-    'previous_response_id',
     'prompt_cache_retention',
     'safety_identifier',
   ]) {
     delete next[key];
+  }
+  if (!options?.preservePreviousResponseId) {
+    delete next.previous_response_id;
   }
 
   if (asTrimmedString(next.service_tier).toLowerCase() !== 'priority') {
@@ -974,6 +979,8 @@ export function buildUpstreamEndpointRequest(input: {
   }
 
   if (input.endpoint === 'responses') {
+    const websocketMode = Object.entries(input.downstreamHeaders || {}).find(([rawKey]) => rawKey.trim().toLowerCase() === 'x-metapi-responses-websocket-mode');
+    const preserveWebsocketIncrementalMode = asTrimmedString(websocketMode?.[1]).toLowerCase() === 'incremental';
     const responsesHeaders = input.downstreamFormat === 'responses'
       ? extractResponsesPassthroughHeaders(input.downstreamHeaders)
       : {};
@@ -986,11 +993,16 @@ export function buildUpstreamEndpointRequest(input: {
         }
         : convertOpenAiBodyToResponsesBodyViaTransformer(openaiBody, input.modelName, input.stream)
     );
+    const sanitizedResponsesBody = sanitizeResponsesBodyForProxyViaTransformer(rawBody, input.modelName, input.stream);
+    if (preserveWebsocketIncrementalMode && rawBody.generate === false) {
+      sanitizedResponsesBody.generate = false;
+    }
     const body = ensureCodexResponsesStoreFalse(
       ensureCodexResponsesInstructions(
         applyCodexResponsesCompatibility(
-          sanitizeResponsesBodyForProxyViaTransformer(rawBody, input.modelName, input.stream),
+          sanitizedResponsesBody,
           sitePlatform,
+          { preservePreviousResponseId: preserveWebsocketIncrementalMode },
         ),
         sitePlatform,
       ),

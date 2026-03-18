@@ -6,6 +6,7 @@ export type RouteSortDir = 'asc' | 'desc';
 export type GroupFilter = null | '__all__' | number;
 export type RouteRoutingStrategy = 'weighted' | 'round_robin';
 export type RouteRowKind = 'persisted' | 'zero_channel';
+export type RouteMode = 'pattern' | 'explicit_group';
 
 export type RouteChannelDraft = {
   accountId: number;
@@ -47,6 +48,8 @@ export type RouteRow = {
   modelPattern: string;
   displayName?: string | null;
   displayIcon?: string | null;
+  routeMode?: RouteMode | null;
+  sourceRouteIds?: number[];
   modelMapping?: string | null;
   routingStrategy?: RouteRoutingStrategy | null;
   decisionSnapshot?: RouteDecision | null;
@@ -60,6 +63,8 @@ export type RouteSummaryRow = {
   modelPattern: string;
   displayName: string | null;
   displayIcon: string | null;
+  routeMode?: RouteMode | null;
+  sourceRouteIds?: number[];
   modelMapping: string | null;
   routingStrategy?: RouteRoutingStrategy | null;
   enabled: boolean;
@@ -156,7 +161,7 @@ export type SortableChannelRowProps = {
 export type GroupRouteItem = {
   id: number;
   title: string;
-  icon: { kind: 'none' } | { kind: 'text'; value: string } | { kind: 'brand'; value: string };
+  icon: { kind: 'auto' } | { kind: 'none' } | { kind: 'text'; value: string } | { kind: 'brand'; value: string };
   brand: BrandInfo | null;
   modelPattern: string;
   channelCount: number;

@@ -32,6 +32,7 @@ export interface LegacySchemaCompatInspector extends
 const LEGACY_COMPAT_TABLES = new Set([
   'account_tokens',
   'token_model_availability',
+  'route_group_sources',
   'proxy_video_tasks',
   'proxy_files',
   'downstream_api_keys',
@@ -49,6 +50,7 @@ const LEGACY_COMPAT_COLUMNS = new Set([
   'account_tokens.value_status',
   'token_routes.display_name',
   'token_routes.display_icon',
+  'token_routes.route_mode',
   'token_routes.decision_snapshot',
   'token_routes.decision_refreshed_at',
   'token_routes.routing_strategy',
@@ -80,6 +82,8 @@ const LEGACY_COMPAT_INDEXES = new Set([
   'downstream_api_keys_enabled_idx',
   'downstream_api_keys_expires_at_idx',
   'proxy_logs_downstream_api_key_created_at_idx',
+  'route_group_sources_group_source_unique',
+  'route_group_sources_source_route_id_idx',
   ...SHARED_INDEX_COMPATIBILITY_SPECS.map((spec) => spec.indexName),
 ]);
 

@@ -21,6 +21,7 @@ type ResponsesProxyStreamResult = {
 type ResponsesProxyStreamSessionInput = {
   modelName: string;
   successfulUpstreamPath: string;
+  strictTerminalEvents?: boolean;
   getUsage: () => {
     promptTokens: number;
     completionTokens: number;
@@ -84,6 +85,14 @@ export function createResponsesProxyStreamSession(input: ResponsesProxyStreamSes
 
   const closeOut = () => {
     if (finalized) return;
+    if (input.strictTerminalEvents) {
+      finalized = true;
+      terminalResult = {
+        status: 'failed',
+        errorMessage: 'stream closed before response.completed',
+      };
+      return;
+    }
     finalize();
   };
 

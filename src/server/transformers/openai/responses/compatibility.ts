@@ -217,7 +217,13 @@ export function buildResponsesCompatibilityBodies(
     if (instructions !== null) richCandidate.instructions = instructions;
 
     const passthroughFields = [
+      'parallel_tool_calls',
+      'include',
       'reasoning',
+      'previous_response_id',
+      'truncation',
+      'text',
+      'service_tier',
       'safety_identifier',
       'max_tool_calls',
       'prompt_cache_key',

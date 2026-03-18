@@ -2,9 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
+import { tokenRouter } from '../../services/tokenRouter.js';
 import { openAiResponsesTransformer } from '../../transformers/openai/responses/index.js';
 
 const installedApps = new WeakSet<FastifyInstance>();
+const WS_TURN_STATE_HEADER = 'x-codex-turn-state';
+const RESPONSES_WEBSOCKET_MODE_HEADER = 'x-metapi-responses-websocket-mode';
+const RESPONSES_WEBSOCKET_TRANSPORT_HEADER = 'x-metapi-responses-websocket-transport';
 
 type NormalizedResponsesWebsocketRequest =
   | {
@@ -26,6 +30,18 @@ function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function headerValueToTrimmedString(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item !== 'string') continue;
+      const trimmed = item.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return '';
+}
+
 function parseJsonObject(raw: RawData): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(String(raw));
@@ -44,46 +60,17 @@ function toResponseInputArray(value: unknown): unknown[] {
 }
 
 function normalizeResponsesWebsocketRequest(
-  raw: RawData,
+  parsed: Record<string, unknown>,
   lastRequest: Record<string, unknown> | null,
   lastResponseOutput: unknown[],
+  supportsIncrementalInput: boolean,
 ): NormalizedResponsesWebsocketRequest {
-  const parsed = parseJsonObject(raw);
-  if (!parsed) {
-    return {
-      ok: false,
-      status: 400,
-      message: 'Invalid websocket JSON payload',
-    };
-  }
-
   const requestType = asTrimmedString(parsed.type);
   if (requestType !== 'response.create' && requestType !== 'response.append') {
     return {
       ok: false,
       status: 400,
       message: `unsupported websocket request type: ${requestType || 'unknown'}`,
-    };
-  }
-
-  if (requestType === 'response.create' && parsed.generate === false) {
-    const next = cloneJsonObject(parsed);
-    delete next.type;
-    delete next.generate;
-    next.stream = true;
-    if (!Array.isArray(next.input)) next.input = [];
-    const modelName = asTrimmedString(next.model);
-    if (!modelName) {
-      return {
-        ok: false,
-        status: 400,
-        message: 'missing model in response.create request',
-      };
-    }
-    return {
-      ok: true,
-      request: next,
-      nextRequestSnapshot: cloneJsonObject(next),
     };
   }
 
@@ -97,6 +84,9 @@ function normalizeResponsesWebsocketRequest(
     }
     const next = cloneJsonObject(parsed);
     delete next.type;
+    if (!supportsIncrementalInput && parsed.generate === false) {
+      delete next.generate;
+    }
     next.stream = true;
     if (!Array.isArray(next.input)) next.input = [];
     const modelName = asTrimmedString(next.model);
@@ -122,15 +112,8 @@ function normalizeResponsesWebsocketRequest(
     };
   }
 
-  const mergedInput = [
-    ...toResponseInputArray(lastRequest.input),
-    ...cloneJsonObject(lastResponseOutput),
-    ...cloneJsonObject(parsed.input),
-  ];
   const next = cloneJsonObject(parsed);
   delete next.type;
-  delete next.previous_response_id;
-  next.input = mergedInput;
   next.stream = true;
   if (!('model' in next) && typeof lastRequest.model === 'string') {
     next.model = lastRequest.model;
@@ -139,11 +122,37 @@ function normalizeResponsesWebsocketRequest(
     next.instructions = cloneJsonObject(lastRequest.instructions);
   }
 
+  if (supportsIncrementalInput && requestType === 'response.create' && asTrimmedString(parsed.previous_response_id)) {
+    return {
+      ok: true,
+      request: next,
+      nextRequestSnapshot: cloneJsonObject(next),
+    };
+  }
+
+  const mergedInput = [
+    ...toResponseInputArray(lastRequest.input),
+    ...cloneJsonObject(lastResponseOutput),
+    ...cloneJsonObject(parsed.input),
+  ];
+  delete next.previous_response_id;
+  next.input = mergedInput;
+
   return {
     ok: true,
     request: next,
     nextRequestSnapshot: cloneJsonObject(next),
   };
+}
+
+function shouldHandleResponsesWebsocketPrewarmLocally(
+  parsed: Record<string, unknown>,
+  lastRequest: Record<string, unknown> | null,
+  supportsIncrementalInput: boolean,
+): boolean {
+  if (supportsIncrementalInput || lastRequest) return false;
+  if (asTrimmedString(parsed.type) !== 'response.create') return false;
+  return parsed.generate === false;
 }
 
 function writeResponsesWebsocketError(
@@ -244,6 +253,21 @@ function buildInjectHeaders(request: IncomingMessage): Record<string, string | s
   return headers;
 }
 
+async function supportsResponsesWebsocketIncrementalInput(
+  parsed: Record<string, unknown>,
+  lastRequest: Record<string, unknown> | null,
+): Promise<boolean> {
+  const requestModel = asTrimmedString(parsed.model) || asTrimmedString(lastRequest?.model);
+  if (!requestModel) return false;
+
+  try {
+    const selected = await tokenRouter.previewSelectedChannel(requestModel);
+    return asTrimmedString(selected?.site?.platform).toLowerCase() === 'codex';
+  } catch {
+    return false;
+  }
+}
+
 async function handleResponsesWebsocketConnection(
   app: FastifyInstance,
   socket: WebSocket,
@@ -259,14 +283,25 @@ async function handleResponsesWebsocketConnection(
       return;
     }
 
-    const normalized = normalizeResponsesWebsocketRequest(raw, lastRequest, lastResponseOutput);
+    const supportsIncrementalInput = await supportsResponsesWebsocketIncrementalInput(parsed, lastRequest);
+    const shouldHandleLocalPrewarm = shouldHandleResponsesWebsocketPrewarmLocally(
+      parsed,
+      lastRequest,
+      supportsIncrementalInput,
+    );
+    const normalized = normalizeResponsesWebsocketRequest(
+      parsed,
+      lastRequest,
+      lastResponseOutput,
+      supportsIncrementalInput,
+    );
     if (!normalized.ok) {
       writeResponsesWebsocketError(socket, normalized.status, normalized.message);
       return;
     }
 
     lastRequest = normalized.nextRequestSnapshot;
-    if (parsed.generate === false && asTrimmedString(parsed.type) === 'response.create') {
+    if (shouldHandleLocalPrewarm) {
       lastResponseOutput = [];
       for (const payload of synthesizePrewarmResponsePayloads(normalized.request)) {
         socket.send(JSON.stringify(payload));
@@ -277,7 +312,11 @@ async function handleResponsesWebsocketConnection(
     const response = await app.inject({
       method: 'POST',
       url: '/v1/responses',
-      headers: buildInjectHeaders(request),
+      headers: {
+        ...buildInjectHeaders(request),
+        [RESPONSES_WEBSOCKET_TRANSPORT_HEADER]: '1',
+        ...(supportsIncrementalInput ? { [RESPONSES_WEBSOCKET_MODE_HEADER]: 'incremental' } : {}),
+      },
       payload: normalized.request,
     });
 
@@ -313,17 +352,25 @@ async function handleResponsesWebsocketConnection(
 
     const pulled = openAiResponsesTransformer.pullSseEvents(response.body);
     const forwardedPayloads: unknown[] = [];
+    let sawTerminalPayload = false;
     for (const event of pulled.events) {
       if (event.data === '[DONE]') continue;
       try {
         const payload = JSON.parse(event.data);
         forwardedPayloads.push(payload);
+        const type = isRecord(payload) ? asTrimmedString(payload.type) : '';
+        if (type === 'response.completed' || type === 'response.failed') {
+          sawTerminalPayload = true;
+        }
         socket.send(JSON.stringify(payload));
       } catch {
         // Ignore malformed SSE frames; the HTTP route already normalizes them.
       }
     }
     lastResponseOutput = collectResponsesOutput(forwardedPayloads);
+    if (!sawTerminalPayload) {
+      writeResponsesWebsocketError(socket, 408, 'stream closed before response.completed');
+    }
   });
 }
 
@@ -332,6 +379,11 @@ export function ensureResponsesWebsocketTransport(app: FastifyInstance) {
   installedApps.add(app);
 
   const websocketServer = new WebSocketServer({ noServer: true });
+  websocketServer.on('headers', (headers, request) => {
+    const turnState = headerValueToTrimmedString(request.headers[WS_TURN_STATE_HEADER]);
+    if (!turnState) return;
+    headers.push(`${WS_TURN_STATE_HEADER}: ${turnState}`);
+  });
 
   app.server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url || '/', 'http://localhost');
