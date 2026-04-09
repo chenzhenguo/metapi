@@ -1023,6 +1023,7 @@ export const api = {
     request('/api/settings/backup/import', {
       method: 'POST',
       body: JSON.stringify({ data }),
+      timeoutMs: 300_000,
     }),
   getBackupWebdavConfig: () => request('/api/settings/backup/webdav'),
   saveBackupWebdavConfig: (data: {
