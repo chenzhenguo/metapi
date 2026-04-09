@@ -65,8 +65,7 @@ function buildMysqlPoolOptions(
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    acquireTimeout: 300000, // 5 minutes
-    timeout: 300000, // 5 minutes
+    connectTimeout: 300000, // 5 minutes
   };
   if (sslEnabled) {
     poolOptions.ssl = { rejectUnauthorized: false };
