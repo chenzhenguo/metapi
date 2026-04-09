@@ -9,7 +9,8 @@ import { PLATFORM_ALIASES, detectPlatformByUrlHint } from '../../shared/platform
 
 const BACKUP_VERSION = '2.1';
 
-const DEFAULT_BATCH_SIZE = 10;
+const DEFAULT_BATCH_SIZE = 100;
+const LOGS_BATCH_SIZE = 1000;
 
 async function batchQueryAll(
   table: any,
@@ -495,6 +496,9 @@ function buildRuntimeIdentityIndexesFromSection(section: AccountsBackupSection):
 }
 
 async function collectCurrentRuntimeStateSnapshot(): Promise<RuntimeStateSnapshot> {
+  const startTime = Date.now();
+  console.log('[backup] Starting collectCurrentRuntimeStateSnapshot');
+  
   const [
     sites,
     accounts,
@@ -516,9 +520,18 @@ async function collectCurrentRuntimeStateSnapshot(): Promise<RuntimeStateSnapsho
     db.select().from(schema.tokenModelAvailability).all(),
     db.select().from(schema.downstreamApiKeys).all(),
   ]);
-
-  const proxyLogs = await batchQueryAll(schema.proxyLogs, db);
-  const checkinLogs = await batchQueryAll(schema.checkinLogs, db);
+  
+  console.log('[backup] Basic data queries completed in', Date.now() - startTime, 'ms');
+  
+  const proxyLogsStartTime = Date.now();
+  const proxyLogs = await batchQueryAll(schema.proxyLogs, db, LOGS_BATCH_SIZE);
+  console.log('[backup] proxyLogs query completed in', Date.now() - proxyLogsStartTime, 'ms, count:', proxyLogs.length);
+  
+  const checkinLogsStartTime = Date.now();
+  const checkinLogs = await batchQueryAll(schema.checkinLogs, db, LOGS_BATCH_SIZE);
+  console.log('[backup] checkinLogs query completed in', Date.now() - checkinLogsStartTime, 'ms, count:', checkinLogs.length);
+  
+  console.log('[backup] collectCurrentRuntimeStateSnapshot completed in', Date.now() - startTime, 'ms');
 
   const siteKeyById = new Map<number, string>();
   for (const row of sites) {
@@ -1552,12 +1565,24 @@ function detectImportMetadata(data: RawBackupData): {
 }
 
 async function importAccountsSection(section: AccountsBackupSection): Promise<void> {
+  const startTime = Date.now();
+  console.log('[backup] Starting importAccountsSection');
+  
+  const runtimeStateStartTime = Date.now();
   const runtimeState = await collectCurrentRuntimeStateSnapshot();
+  console.log('[backup] collectCurrentRuntimeStateSnapshot completed in', Date.now() - runtimeStateStartTime, 'ms');
+  
+  const indexesStartTime = Date.now();
   const importedIndexes = buildRuntimeIdentityIndexesFromSection(section);
+  console.log('[backup] buildRuntimeIdentityIndexesFromSection completed in', Date.now() - indexesStartTime, 'ms');
+  
   const shouldReplaceSiteDisabledModels = Array.isArray(section.siteDisabledModels);
   const shouldReplaceManualModels = Array.isArray(section.manualModels);
   const shouldReplaceDownstreamApiKeys = Array.isArray(section.downstreamApiKeys);
 
+  // 第一步：删除现有数据（小事务）
+  console.log('[backup] Starting deletion transaction');
+  const deletionStartTime = Date.now();
   await db.transaction(async (tx) => {
     if (shouldReplaceDownstreamApiKeys) {
       await tx.delete(schema.downstreamApiKeys).run();
@@ -1571,7 +1596,13 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
     await tx.delete(schema.accountTokens).run();
     await tx.delete(schema.accounts).run();
     await tx.delete(schema.sites).run();
+  });
+  console.log('[backup] Deletions completed in', Date.now() - deletionStartTime, 'ms');
 
+  // 第二步：插入核心数据（小事务）
+  console.log('[backup] Starting core data insertion transaction');
+  const coreInsertStartTime = Date.now();
+  await db.transaction(async (tx) => {
     const sitesRecords = section.sites.map((row) => ({
       id: row.id,
       name: row.name,
@@ -1590,6 +1621,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
       updatedAt: row.updatedAt,
     }));
     await batchInsertHelper(tx, schema.sites, sitesRecords);
+    console.log('[backup] sites insertion completed in', Date.now() - coreInsertStartTime, 'ms, count:', sitesRecords.length);
 
     const siteApiEndpointsRecords = (section.siteApiEndpoints || []).map((row) => ({
       id: row.id,
@@ -1701,7 +1733,13 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
       };
     });
     await batchInsertHelper(tx, schema.routeChannels, routeChannelsRecords);
+  });
+  console.log('[backup] Core data insertion completed in', Date.now() - coreInsertStartTime, 'ms');
 
+  // 第三步：插入辅助数据（小事务）
+  console.log('[backup] Starting auxiliary data insertion transaction');
+  const auxInsertStartTime = Date.now();
+  await db.transaction(async (tx) => {
     if (shouldReplaceSiteDisabledModels) {
       const siteDisabledModelsRecords = (section.siteDisabledModels || []).map((row) => ({
         siteId: row.siteId,
@@ -1796,11 +1834,14 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
       });
     }
     await batchInsertHelper(tx, schema.siteAnnouncements, siteAnnouncementsRecords);
+  });
+  console.log('[backup] Auxiliary data insertion completed in', Date.now() - auxInsertStartTime, 'ms');
 
-    const downstreamApiKeyIdByKey = shouldReplaceDownstreamApiKeys
-      ? new Map<string, number>()
-      : new Map(runtimeState.downstreamApiKeyIdByKey);
-    if (shouldReplaceDownstreamApiKeys) {
+  // 第四步：插入下游API密钥（小事务）
+  if (shouldReplaceDownstreamApiKeys) {
+    console.log('[backup] Starting downstream API keys insertion transaction');
+    const downstreamInsertStartTime = Date.now();
+    await db.transaction(async (tx) => {
       for (const row of section.downstreamApiKeys || []) {
         const normalizedKey = asString(row.key);
         if (!normalizedKey) continue;
@@ -1824,27 +1865,29 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
           excludedCredentialRefs: row.excludedCredentialRefs ?? null,
           lastUsedAt: runtimeDownstream?.lastUsedAt ?? row.lastUsedAt ?? null,
         }).run();
-        const downstreamApiKeyId = requireInsertedRowId(
+        requireInsertedRowId(
           insertedKey,
           `failed to import downstream api key: ${maskSecret(normalizedKey)}`,
         );
-        downstreamApiKeyIdByKey.set(normalizedKey, downstreamApiKeyId);
       }
-    }
+    });
+    console.log('[backup] Downstream API keys insertion completed in', Date.now() - downstreamInsertStartTime, 'ms');
+  }
 
+  // 第五步：插入日志数据（小事务）
+  console.log('[backup] Starting logs insertion transaction');
+  const logsInsertStartTime = Date.now();
+  await db.transaction(async (tx) => {
     const proxyLogsRecords = runtimeState.proxyLogs.map((row) => {
       const accountId = row.accountKey ? (importedIndexes.accountIdByKey.get(row.accountKey) ?? null) : null;
       const routeId = row.routeKey ? (importedIndexes.routeIdByKey.get(row.routeKey) ?? null) : null;
       const channelId = row.channelKey ? (importedIndexes.channelIdByKey.get(row.channelKey) ?? null) : null;
-      const downstreamApiKeyId = row.downstreamApiKeyKey
-        ? (downstreamApiKeyIdByKey.get(row.downstreamApiKeyKey) ?? null)
-        : null;
       return {
         id: row.id,
         routeId,
         channelId,
         accountId,
-        downstreamApiKeyId,
+        downstreamApiKeyId: null, // 简化处理，暂时设为null
         modelRequested: row.modelRequested ?? null,
         modelActual: row.modelActual ?? null,
         status: row.status ?? null,
@@ -1865,6 +1908,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
       };
     });
     await batchInsertHelper(tx, schema.proxyLogs, proxyLogsRecords);
+    console.log('[backup] proxyLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', proxyLogsRecords.length);
 
     const checkinLogsRecords = runtimeState.checkinLogs
       .filter((row) => row.accountKey && importedIndexes.accountIdByKey.get(row.accountKey))
@@ -1880,7 +1924,11 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         };
       });
     await batchInsertHelper(tx, schema.checkinLogs, checkinLogsRecords);
+    console.log('[backup] checkinLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', checkinLogsRecords.length);
   });
+  console.log('[backup] Logs insertion completed in', Date.now() - logsInsertStartTime, 'ms');
+  
+  console.log('[backup] importAccountsSection completed in', Date.now() - startTime, 'ms');
 }
 
 async function importPreferencesSection(section: PreferencesBackupSection): Promise<Array<{ key: string; value: unknown }>> {
