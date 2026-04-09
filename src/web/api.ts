@@ -897,6 +897,7 @@ export const api = {
   importOAuthConnections: (data: Record<string, unknown>) => request('/api/oauth/import', {
     method: 'POST',
     body: JSON.stringify(Array.isArray(data.items) ? data : { data }),
+    timeoutMs: 300_000,
   }) as Promise<OAuthImportResponse>,
   createOAuthRouteUnit: (data: { accountIds: number[]; name: string; strategy: OAuthRouteUnitStrategy }) => request('/api/oauth/route-units', {
     method: 'POST',
@@ -1023,6 +1024,7 @@ export const api = {
     request('/api/settings/backup/import', {
       method: 'POST',
       body: JSON.stringify({ data }),
+      timeoutMs: 300_000,
     }),
   getBackupWebdavConfig: () => request('/api/settings/backup/webdav'),
   saveBackupWebdavConfig: (data: {
@@ -1049,7 +1051,7 @@ export const api = {
     request('/api/settings/backup/webdav/import', {
       method: 'POST',
       body: JSON.stringify({}),
-      timeoutMs: 60_000,
+      timeoutMs: 300_000,
     }),
   clearRuntimeCache: () => request('/api/settings/maintenance/clear-cache', { method: 'POST' }),
   clearUsageData: () => request('/api/settings/maintenance/clear-usage', { method: 'POST' }),

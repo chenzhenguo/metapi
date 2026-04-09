@@ -1834,25 +1834,40 @@ export async function settingsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ success: false, message: '导入数据格式错误：需要 JSON 对象' });
     }
 
-    try {
-      const result = await importBackup(parsedBody.data.data);
-      for (const item of result.appliedSettings) {
-        applyImportedSettingToRuntime(item.key, item.value);
-      }
-      if (result.appliedSettings.some((item) => item.key === 'backup_webdav_config_v1')) {
-        await reloadBackupWebdavScheduler();
-      }
-      return {
-        success: true,
-        message: '导入完成',
-        ...result,
-      };
-    } catch (err: any) {
-      return reply.code(400).send({
-        success: false,
-        message: err?.message || '导入失败',
-      });
-    }
+    const backupData = parsedBody.data.data;
+    
+    const { task, reused } = startBackgroundTask(
+      {
+        type: 'maintenance',
+        title: '备份导入',
+        dedupeKey: 'backup-import',
+        notifyOnFailure: true,
+        successMessage: (currentTask) => {
+          const result = currentTask.result as any;
+          if (!result) return '备份导入已完成';
+          return `备份导入完成：账号 ${result.sections.accounts ? '已导入' : '未导入'}，设置 ${result.sections.preferences ? '已导入' : '未导入'}`;
+        },
+        failureMessage: (currentTask) => `备份导入失败：${currentTask.error || 'unknown error'}`,
+      },
+      async () => {
+        const result = await importBackup(backupData);
+        for (const item of result.appliedSettings) {
+          applyImportedSettingToRuntime(item.key, item.value);
+        }
+        if (result.appliedSettings.some((item) => item.key === 'backup_webdav_config_v1')) {
+          await reloadBackupWebdavScheduler();
+        }
+        return result;
+      },
+    );
+
+    return reply.code(202).send({
+      success: true,
+      queued: true,
+      reused,
+      jobId: task.id,
+      message: '备份导入任务已开始执行',
+    });
   });
 
   app.get('/api/settings/backup/webdav', async () => {

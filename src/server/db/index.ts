@@ -62,6 +62,11 @@ function buildMysqlPoolOptions(
   const poolOptions: mysql.PoolOptions = {
     uri: connectionString,
     jsonStrings: true,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    acquireTimeout: 300000, // 5 minutes
+    timeout: 300000, // 5 minutes
   };
   if (sslEnabled) {
     poolOptions.ssl = { rejectUnauthorized: false };
@@ -73,7 +78,12 @@ function buildPostgresPoolOptions(
   connectionString = config.dbUrl,
   sslEnabled = config.dbSsl,
 ): pg.PoolConfig {
-  const poolOptions: pg.PoolConfig = { connectionString };
+  const poolOptions: pg.PoolConfig = {
+    connectionString,
+    max: 10,
+    idleTimeoutMillis: 300000, // 5 minutes
+    connectionTimeoutMillis: 300000, // 5 minutes
+  };
   if (sslEnabled) {
     poolOptions.ssl = { rejectUnauthorized: false };
   }
