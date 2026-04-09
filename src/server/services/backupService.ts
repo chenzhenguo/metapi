@@ -1473,14 +1473,14 @@ export async function exportBackup(type: BackupExportType): Promise<BackupV2> {
 function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
   if (!isRecord(input)) return null;
 
-  const sites = Array.isArray(input.sites) ? input.sites as SiteRow[] : null;
+  const sites = Array.isArray(input.sites) ? input.sites as SiteRow[] : [];
   const siteApiEndpoints = Array.isArray(input.siteApiEndpoints)
     ? input.siteApiEndpoints as SiteApiEndpointRow[]
     : undefined;
-  const accounts = Array.isArray(input.accounts) ? input.accounts as BackupAccountRow[] : null;
-  const accountTokens = Array.isArray(input.accountTokens) ? input.accountTokens as AccountTokenRow[] : null;
-  const tokenRoutes = Array.isArray(input.tokenRoutes) ? input.tokenRoutes as TokenRouteRow[] : null;
-  const routeChannels = Array.isArray(input.routeChannels) ? input.routeChannels as BackupRouteChannelRow[] : null;
+  const accounts = Array.isArray(input.accounts) ? input.accounts as BackupAccountRow[] : [];
+  const accountTokens = Array.isArray(input.accountTokens) ? input.accountTokens as AccountTokenRow[] : [];
+  const tokenRoutes = Array.isArray(input.tokenRoutes) ? input.tokenRoutes as TokenRouteRow[] : [];
+  const routeChannels = Array.isArray(input.routeChannels) ? input.routeChannels as BackupRouteChannelRow[] : [];
   const routeGroupSources = Array.isArray(input.routeGroupSources)
     ? input.routeGroupSources as RouteGroupSourceRow[]
     : [];
@@ -1494,7 +1494,8 @@ function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
     ? input.downstreamApiKeys as BackupDownstreamApiKeyRow[]
     : undefined;
 
-  if (!sites || !accounts || !accountTokens || !tokenRoutes || !routeChannels) return null;
+  // 只要有站点或账号数据就认为是有效的账号备份
+  if (sites.length === 0 && accounts.length === 0) return null;
 
   return {
     sites,
@@ -1513,16 +1514,29 @@ function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
 function coercePreferencesSection(input: unknown): PreferencesBackupSection | null {
   if (!isRecord(input)) return null;
   const settingsRaw = input.settings;
-  if (!Array.isArray(settingsRaw)) return null;
+  
+  let settings: Array<{ key: string; value: unknown }> = [];
+  
+  if (Array.isArray(settingsRaw)) {
+    settings = settingsRaw
+      .map((row) => {
+        if (!isRecord(row)) return null;
+        const key = typeof row.key === 'string' ? row.key.trim() : '';
+        if (!key || EXCLUDED_SETTING_KEYS.has(key)) return null;
+        return { key, value: row.value };
+      })
+      .filter((row): row is { key: string; value: unknown } => !!row);
+  } else if (isRecord(settingsRaw)) {
+    // 处理对象形式的设置数据
+    for (const [key, value] of Object.entries(settingsRaw)) {
+      const trimmedKey = key.trim();
+      if (!trimmedKey || EXCLUDED_SETTING_KEYS.has(trimmedKey)) continue;
+      settings.push({ key: trimmedKey, value });
+    }
+  }
 
-  const settings = settingsRaw
-    .map((row) => {
-      if (!isRecord(row)) return null;
-      const key = typeof row.key === 'string' ? row.key.trim() : '';
-      if (!key || EXCLUDED_SETTING_KEYS.has(key)) return null;
-      return { key, value: row.value };
-    })
-    .filter((row): row is { key: string; value: unknown } => !!row);
+  // 只要有设置数据就认为是有效的设置备份
+  if (settings.length === 0) return null;
 
   return { settings };
 }
@@ -1592,6 +1606,19 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
 }> {
   const startTime = Date.now();
   console.log('[backup] Starting importAccountsSection');
+  
+  // 如果没有账号相关数据，直接返回空统计
+  if (section.sites.length === 0 && section.accounts.length === 0) {
+    console.log('[backup] No accounts data to import');
+    return {
+      newSites: 0,
+      updatedSites: 0,
+      newAccounts: 0,
+      updatedAccounts: 0,
+      newTokens: 0,
+      updatedTokens: 0,
+    };
+  }
   
   const runtimeStateStartTime = Date.now();
   const runtimeState = await collectCurrentRuntimeStateSnapshot();
@@ -1681,7 +1708,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
     }
     
     // 处理站点API端点
-    if (section.siteApiEndpoints) {
+    if (section.siteApiEndpoints && section.siteApiEndpoints.length > 0) {
       await batchInsertHelper(tx, schema.siteApiEndpoints, section.siteApiEndpoints.map((row) => ({
         id: row.id,
         siteId: row.siteId,
@@ -1840,33 +1867,35 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
     }
     
     // 处理路由通道
-    // 先删除现有路由通道，再重新插入（因为通道依赖关系复杂）
-    await tx.delete(schema.routeChannels).run();
-    await batchInsertHelper(tx, schema.routeChannels, section.routeChannels.map((row) => {
-      const channelKey = importedIndexes.channelKeyById.get(row.id);
-      const runtimeChannel = channelKey ? runtimeState.routeChannelRuntimeByKey.get(channelKey) : undefined;
-      return {
-        id: row.id,
-        routeId: row.routeId,
-        accountId: row.accountId,
-        tokenId: row.tokenId,
-        sourceModel: row.sourceModel ?? null,
-        priority: row.priority,
-        weight: row.weight,
-        enabled: row.enabled,
-        manualOverride: row.manualOverride,
-        successCount: runtimeChannel?.successCount ?? row.successCount,
-        failCount: runtimeChannel?.failCount ?? row.failCount,
-        totalLatencyMs: runtimeChannel?.totalLatencyMs ?? row.totalLatencyMs,
-        totalCost: runtimeChannel?.totalCost ?? row.totalCost,
-        lastUsedAt: runtimeChannel?.lastUsedAt ?? row.lastUsedAt,
-        lastSelectedAt: runtimeChannel?.lastSelectedAt ?? row.lastSelectedAt ?? null,
-        lastFailAt: runtimeChannel?.lastFailAt ?? row.lastFailAt,
-        consecutiveFailCount: runtimeChannel?.consecutiveFailCount ?? row.consecutiveFailCount ?? 0,
-        cooldownLevel: runtimeChannel?.cooldownLevel ?? row.cooldownLevel ?? 0,
-        cooldownUntil: runtimeChannel?.cooldownUntil ?? row.cooldownUntil,
-      };
-    }));
+    if (section.routeChannels.length > 0) {
+      // 先删除现有路由通道，再重新插入（因为通道依赖关系复杂）
+      await tx.delete(schema.routeChannels).run();
+      await batchInsertHelper(tx, schema.routeChannels, section.routeChannels.map((row) => {
+        const channelKey = importedIndexes.channelKeyById.get(row.id);
+        const runtimeChannel = channelKey ? runtimeState.routeChannelRuntimeByKey.get(channelKey) : undefined;
+        return {
+          id: row.id,
+          routeId: row.routeId,
+          accountId: row.accountId,
+          tokenId: row.tokenId,
+          sourceModel: row.sourceModel ?? null,
+          priority: row.priority,
+          weight: row.weight,
+          enabled: row.enabled,
+          manualOverride: row.manualOverride,
+          successCount: runtimeChannel?.successCount ?? row.successCount,
+          failCount: runtimeChannel?.failCount ?? row.failCount,
+          totalLatencyMs: runtimeChannel?.totalLatencyMs ?? row.totalLatencyMs,
+          totalCost: runtimeChannel?.totalCost ?? row.totalCost,
+          lastUsedAt: runtimeChannel?.lastUsedAt ?? row.lastUsedAt,
+          lastSelectedAt: runtimeChannel?.lastSelectedAt ?? row.lastSelectedAt ?? null,
+          lastFailAt: runtimeChannel?.lastFailAt ?? row.lastFailAt,
+          consecutiveFailCount: runtimeChannel?.consecutiveFailCount ?? row.consecutiveFailCount ?? 0,
+          cooldownLevel: runtimeChannel?.cooldownLevel ?? row.cooldownLevel ?? 0,
+          cooldownUntil: runtimeChannel?.cooldownUntil ?? row.cooldownUntil,
+        };
+      }));
+    }
   });
   console.log('[backup] Smart core data import completed in', Date.now() - coreImportStartTime, 'ms');
   console.log('[backup] Import stats:', stats);
@@ -1920,7 +1949,9 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
         siteId: row.siteId,
         modelName: row.modelName,
       }));
-      await batchInsertHelper(tx, schema.siteDisabledModels, siteDisabledModelsRecords);
+      if (siteDisabledModelsRecords.length > 0) {
+        await batchInsertHelper(tx, schema.siteDisabledModels, siteDisabledModelsRecords);
+      }
     }
 
     const importedManualModelKeys = new Set<string>();
@@ -1940,7 +1971,9 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
           checkedAt,
         };
       });
-      await batchInsertHelper(tx, schema.modelAvailability, manualModelsRecords);
+      if (manualModelsRecords.length > 0) {
+        await batchInsertHelper(tx, schema.modelAvailability, manualModelsRecords);
+      }
     }
 
     const nonManualAvailabilityRecords = runtimeState.nonManualAvailability
@@ -1963,7 +1996,9 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
           checkedAt: row.checkedAt,
         };
       });
-    await batchInsertHelper(tx, schema.modelAvailability, nonManualAvailabilityRecords);
+    if (nonManualAvailabilityRecords.length > 0) {
+      await batchInsertHelper(tx, schema.modelAvailability, nonManualAvailabilityRecords);
+    }
 
     const tokenAvailabilityRecords = runtimeState.tokenAvailability
       .filter((row) => {
@@ -1982,7 +2017,9 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
           checkedAt: row.checkedAt,
       };
     });
-    await batchInsertHelper(tx, schema.tokenModelAvailability, tokenAvailabilityRecords);
+    if (tokenAvailabilityRecords.length > 0) {
+      await batchInsertHelper(tx, schema.tokenModelAvailability, tokenAvailabilityRecords);
+    }
 
     const siteAnnouncementsRecords: typeof schema.siteAnnouncements.$inferInsert[] = [];
     for (const row of runtimeState.siteAnnouncements) {
@@ -2008,16 +2045,18 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
         rawPayload: row.rawPayload ?? null,
       });
     }
-    await batchInsertHelper(tx, schema.siteAnnouncements, siteAnnouncementsRecords);
+    if (siteAnnouncementsRecords.length > 0) {
+      await batchInsertHelper(tx, schema.siteAnnouncements, siteAnnouncementsRecords);
+    }
   });
   console.log('[backup] Auxiliary data insertion completed in', Date.now() - auxInsertStartTime, 'ms');
 
   // 第四步：插入下游API密钥（小事务）
-  if (shouldReplaceDownstreamApiKeys) {
+  if (shouldReplaceDownstreamApiKeys && section.downstreamApiKeys && section.downstreamApiKeys.length > 0) {
     console.log('[backup] Starting downstream API keys insertion transaction');
     const downstreamInsertStartTime = Date.now();
     await db.transaction(async (tx) => {
-      for (const row of section.downstreamApiKeys || []) {
+      for (const row of section.downstreamApiKeys) {
         const normalizedKey = asString(row.key);
         if (!normalizedKey) continue;
         const runtimeDownstream = runtimeState.downstreamApiKeyRuntimeByKey.get(normalizedKey);
@@ -2082,8 +2121,10 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
         createdAt: row.createdAt,
       };
     });
-    await batchInsertHelper(tx, schema.proxyLogs, proxyLogsRecords);
-    console.log('[backup] proxyLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', proxyLogsRecords.length);
+    if (proxyLogsRecords.length > 0) {
+      await batchInsertHelper(tx, schema.proxyLogs, proxyLogsRecords);
+      console.log('[backup] proxyLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', proxyLogsRecords.length);
+    }
 
     const checkinLogsRecords = runtimeState.checkinLogs
       .filter((row) => row.accountKey && importedIndexes.accountIdByKey.get(row.accountKey))
@@ -2098,8 +2139,10 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<{
           createdAt: row.createdAt,
         };
       });
-    await batchInsertHelper(tx, schema.checkinLogs, checkinLogsRecords);
-    console.log('[backup] checkinLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', checkinLogsRecords.length);
+    if (checkinLogsRecords.length > 0) {
+      await batchInsertHelper(tx, schema.checkinLogs, checkinLogsRecords);
+      console.log('[backup] checkinLogs insertion completed in', Date.now() - logsInsertStartTime, 'ms, count:', checkinLogsRecords.length);
+    }
   });
   console.log('[backup] Logs insertion completed in', Date.now() - logsInsertStartTime, 'ms');
   
@@ -2122,6 +2165,12 @@ async function importPreferencesSection(section: PreferencesBackupSection): Prom
   let newSettings = 0;
   let updatedSettings = 0;
 
+  // 如果没有设置数据，直接返回空结果
+  if (section.settings.length === 0) {
+    console.log('[backup] No preferences data to import');
+    return { applied, newSettings, updatedSettings };
+  }
+
   await db.transaction(async (tx) => {
     for (const row of section.settings) {
       if (!isSettingValueAcceptable(row.key, row.value)) continue;
@@ -2143,23 +2192,39 @@ async function importPreferencesSection(section: PreferencesBackupSection): Prom
 }
 
 export async function importBackup(data: RawBackupData): Promise<BackupImportResult> {
+  console.log('[backup] Starting importBackup');
+  
   if (!isRecord(data)) {
+    console.error('[backup] Import failed: Data is not a JSON object');
     throw new Error('导入数据格式错误：必须为 JSON 对象');
   }
 
   if (!('timestamp' in data) || data.timestamp === null || data.timestamp === undefined) {
+    console.error('[backup] Import failed: Missing timestamp');
     throw new Error('导入数据格式错误：缺少 timestamp');
   }
 
+  console.log('[backup] Detecting accounts section');
   const accountsSection = detectAccountsSection(data);
+  console.log('[backup] Detecting preferences section');
   const preferencesSection = detectPreferencesSection(data);
+  console.log('[backup] Detecting import metadata');
   const importMetadata = detectImportMetadata(data);
 
   const type = typeof data.type === 'string' ? data.type : '';
   const accountsRequested = type === 'accounts' || !!accountsSection;
   const preferencesRequested = type === 'preferences' || !!preferencesSection;
 
+  console.log('[backup] Import request analysis:', {
+    type,
+    accountsRequested,
+    preferencesRequested,
+    hasAccountsSection: !!accountsSection,
+    hasPreferencesSection: !!preferencesSection
+  });
+
   if (!accountsRequested && !preferencesRequested) {
+    console.error('[backup] Import failed: No recognizable accounts or preferences data');
     throw new Error('导入数据中没有可识别的账号或设置数据');
   }
 
@@ -2167,6 +2232,7 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
   let preferencesImported = false;
   let appliedSettings: Array<{ key: string; value: unknown }> = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   
   // 初始化统计数据
   let accountsStats = {
@@ -2184,21 +2250,30 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
   };
 
   if (accountsRequested) {
+    console.log('[backup] Starting accounts import');
     if (!accountsSection) {
-      errors.push('导入数据格式错误：账号数据结构不正确');
+      const errorMsg = '导入数据格式错误：账号数据结构不正确';
+      console.error('[backup]', errorMsg);
+      errors.push(errorMsg);
     } else {
       try {
         accountsStats = await importAccountsSection(accountsSection);
         accountsImported = true;
+        console.log('[backup] Accounts import successful:', accountsStats);
       } catch (error: any) {
-        errors.push(`账号导入失败：${error.message}`);
+        const errorMsg = `账号导入失败：${error.message}`;
+        console.error('[backup]', errorMsg, error);
+        errors.push(errorMsg);
       }
     }
   }
 
   if (preferencesRequested) {
+    console.log('[backup] Starting preferences import');
     if (!preferencesSection) {
-      errors.push('导入数据格式错误：设置数据结构不正确');
+      const errorMsg = '导入数据格式错误：设置数据结构不正确';
+      console.error('[backup]', errorMsg);
+      errors.push(errorMsg);
     } else {
       try {
         const result = await importPreferencesSection(preferencesSection);
@@ -2208,8 +2283,11 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
           updatedSettings: result.updatedSettings,
         };
         preferencesImported = true;
+        console.log('[backup] Preferences import successful:', settingsStats);
       } catch (error: any) {
-        errors.push(`设置导入失败：${error.message}`);
+        const errorMsg = `设置导入失败：${error.message}`;
+        console.error('[backup]', errorMsg, error);
+        errors.push(errorMsg);
       }
     }
   }
@@ -2232,7 +2310,12 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
     updatedSettings: settingsStats.updatedSettings,
   };
 
-  return {
+  // 合并警告信息
+  if (importMetadata.warnings && importMetadata.warnings.length > 0) {
+    warnings.push(...importMetadata.warnings);
+  }
+
+  const result = {
     allImported: (!accountsRequested || accountsImported) && (!preferencesRequested || preferencesImported),
     sections: {
       accounts: accountsImported,
@@ -2240,9 +2323,19 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
     },
     appliedSettings,
     summary,
-    warnings: importMetadata.warnings,
+    warnings: warnings.length > 0 ? warnings : undefined,
     errors: errors.length > 0 ? errors : undefined,
   };
+
+  console.log('[backup] Import completed:', {
+    allImported: result.allImported,
+    sections: result.sections,
+    summary: result.summary,
+    hasErrors: !!result.errors,
+    hasWarnings: !!result.warnings
+  });
+
+  return result;
 }
 
 export async function getBackupWebdavConfig() {
