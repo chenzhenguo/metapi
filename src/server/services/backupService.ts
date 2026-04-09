@@ -284,7 +284,7 @@ const EXCLUDED_SETTING_KEYS = new Set<string>([
 const BACKUP_WEBDAV_CONFIG_SETTING_KEY = 'backup_webdav_config_v1';
 const BACKUP_WEBDAV_STATE_SETTING_KEY = 'backup_webdav_state_v1';
 const BACKUP_WEBDAV_DEFAULT_AUTO_SYNC_CRON = '0 */6 * * *';
-const BACKUP_WEBDAV_FETCH_TIMEOUT_MS = 15_000;
+const BACKUP_WEBDAV_FETCH_TIMEOUT_MS = 300_000;
 let backupWebdavTask: cron.ScheduledTask | null = null;
 
 const DIRECT_API_PLATFORMS = new Set([
