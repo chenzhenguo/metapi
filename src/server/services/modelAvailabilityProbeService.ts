@@ -66,6 +66,50 @@ export type ModelAvailabilityProbeExecutionResult = {
 
 let probeSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 const probeAccountLeases = new Set<number>();
+const probeSiteLeases = new Set<number>();
+
+// 站点测活记录，用于频率限制
+interface SiteProbeRecord {
+  count: number;
+  lastProbeTime: number;
+}
+const siteProbeRecords = new Map<number, SiteProbeRecord>();
+
+// 检查站点测活频率是否超过限制
+function checkSiteProbeFrequency(siteId: number): boolean {
+  const now = Date.now();
+  const FIVE_MINUTES = 5 * 60 * 1000;
+  const MAX_PROBES_PER_FIVE_MINUTES = config.modelAvailabilityProbeMaxPerFiveMinutes;
+  
+  const record = siteProbeRecords.get(siteId);
+  if (!record) {
+    // 第一次测活，创建记录
+    siteProbeRecords.set(siteId, {
+      count: 1,
+      lastProbeTime: now,
+    });
+    return true;
+  }
+  
+  // 检查是否在 5 分钟窗口内
+  if (now - record.lastProbeTime < FIVE_MINUTES) {
+    if (record.count >= MAX_PROBES_PER_FIVE_MINUTES) {
+      return false; // 超过限制
+    }
+    // 在窗口内，增加计数
+    siteProbeRecords.set(siteId, {
+      count: record.count + 1,
+      lastProbeTime: record.lastProbeTime,
+    });
+  } else {
+    // 超过 5 分钟，重置记录
+    siteProbeRecords.set(siteId, {
+      count: 1,
+      lastProbeTime: now,
+    });
+  }
+  return true;
+}
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -204,15 +248,19 @@ async function loadProbeTargetsForAccount(context: ProbeAccountContext): Promise
   return targets;
 }
 
-function tryAcquireProbeAccountLease(accountId: number): boolean {
+function tryAcquireProbeAccountLease(accountId: number, siteId: number): boolean {
   if (!Number.isFinite(accountId) || accountId <= 0) return false;
+  if (!Number.isFinite(siteId) || siteId <= 0) return false;
   if (probeAccountLeases.has(accountId)) return false;
+  if (probeSiteLeases.has(siteId)) return false;
   probeAccountLeases.add(accountId);
+  probeSiteLeases.add(siteId);
   return true;
 }
 
-function releaseProbeAccountLease(accountId: number): void {
+function releaseProbeAccountLease(accountId: number, siteId: number): void {
   probeAccountLeases.delete(accountId);
+  probeSiteLeases.delete(siteId);
 }
 
 function buildSkippedProbeAccountResult(input: {
@@ -257,65 +305,97 @@ export async function executeModelAvailabilityProbe(input: {
   accountId?: number;
   rebuildRoutes?: boolean;
 } = {}): Promise<ModelAvailabilityProbeExecutionResult> {
-  const accountIds = input.accountId
-    ? [input.accountId]
-    : (await db.select({ id: schema.accounts.id })
+  // 获取所有活跃账号及其站点信息
+  const accountRows = input.accountId
+    ? (await db.select({
+        id: schema.accounts.id,
+        siteId: schema.accounts.siteId,
+      })
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, input.accountId))
+      .all())
+    : (await db.select({
+        id: schema.accounts.id,
+        siteId: schema.accounts.siteId,
+      })
       .from(schema.accounts)
       .where(eq(schema.accounts.status, 'active'))
-      .all()).map((row) => row.id);
+      .all());
+
+  // 按站点分组
+  const accountsBySite = new Map<number, number[]>();
+  for (const row of accountRows) {
+    if (!accountsBySite.has(row.siteId)) {
+      accountsBySite.set(row.siteId, []);
+    }
+    accountsBySite.get(row.siteId)?.push(row.id);
+  }
 
   const results: ModelAvailabilityProbeAccountResult[] = [];
   let shouldRebuildRoutes = false;
 
-  for (const accountId of accountIds) {
-    const context = await loadActiveProbeAccountContext(accountId);
-    if (!context) {
-      continue;
-    }
-    if (!tryAcquireProbeAccountLease(accountId)) {
-      results.push(buildSkippedProbeAccountResult({
-        accountId,
-        siteId: context.site.id,
-        message: 'model availability probe already running for account',
-      }));
-      continue;
-    }
-
-    try {
-      const targets = await loadProbeTargetsForAccount(context);
-      if (targets.length <= 0) {
+  // 并行处理不同站点
+  const sitePromises = Array.from(accountsBySite.entries()).map(async ([siteId, siteAccountIds]) => {
+    // 站点级串行处理
+    for (const accountId of siteAccountIds) {
+      const context = await loadActiveProbeAccountContext(accountId);
+      if (!context) {
+        continue;
+      }
+      if (!checkSiteProbeFrequency(siteId)) {
         results.push(buildSkippedProbeAccountResult({
           accountId,
           siteId: context.site.id,
-          message: 'no discovered models to probe',
+          message: 'model availability probe frequency limit exceeded for site',
+        }));
+        continue;
+      }
+      if (!tryAcquireProbeAccountLease(accountId, siteId)) {
+        results.push(buildSkippedProbeAccountResult({
+          accountId,
+          siteId: context.site.id,
+          message: 'model availability probe already running for account or site',
         }));
         continue;
       }
 
-      let supported = 0;
-      let unsupported = 0;
-      let inconclusive = 0;
-      let skipped = 0;
-      let updatedRows = 0;
-      let failed = false;
+      try {
+        const targets = await loadProbeTargetsForAccount(context);
+        if (targets.length <= 0) {
+          results.push(buildSkippedProbeAccountResult({
+            accountId,
+            siteId: context.site.id,
+            message: 'no discovered models to probe',
+          }));
+          continue;
+        }
 
-      const probeOutcomes = await mapWithConcurrency(
-        targets,
-        config.modelAvailabilityProbeConcurrency,
-        async (target) => {
+        let supported = 0;
+        let unsupported = 0;
+        let inconclusive = 0;
+        let skipped = 0;
+        let updatedRows = 0;
+        let failed = false;
+
+        // 串行处理模型（TPM=1）
+        const probeOutcomes = [];
+        for (const target of targets) {
           try {
+            // 添加延迟确保 TPM 限制
+            const delayMs = Math.round(60000 / config.modelAvailabilityProbeTpm);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
             const probe = await probeSingleTarget(target);
             const update = await updateProbeRow(target, probe.status, probe.latencyMs);
-            return {
+            probeOutcomes.push({
               target,
               probe,
               touched: update.touched,
               availabilityChanged: update.availabilityChanged,
               failed: false,
-            };
+            });
           } catch (error) {
             console.warn(`[model-probe] account ${accountId} model ${target.modelName} probe failed`, error);
-            return {
+            probeOutcomes.push({
               target,
               probe: {
                 status: 'inconclusive' as const,
@@ -325,45 +405,48 @@ export async function executeModelAvailabilityProbe(input: {
               touched: false,
               availabilityChanged: false,
               failed: true,
-            };
+            });
           }
-        },
-      );
+        }
 
-      for (const outcome of probeOutcomes) {
-        if (outcome.probe.status === 'supported') supported += 1;
-        if (outcome.probe.status === 'unsupported') unsupported += 1;
-        if (outcome.probe.status === 'inconclusive') inconclusive += 1;
-        if (outcome.probe.status === 'skipped') skipped += 1;
-        if (outcome.touched) {
-          updatedRows += 1;
+        for (const outcome of probeOutcomes) {
+          if (outcome.probe.status === 'supported') supported += 1;
+          if (outcome.probe.status === 'unsupported') unsupported += 1;
+          if (outcome.probe.status === 'inconclusive') inconclusive += 1;
+          if (outcome.probe.status === 'skipped') skipped += 1;
+          if (outcome.touched) {
+            updatedRows += 1;
+          }
+          if (outcome.availabilityChanged) {
+            shouldRebuildRoutes = true;
+          }
+          if (outcome.failed) {
+            failed = true;
+          }
         }
-        if (outcome.availabilityChanged) {
-          shouldRebuildRoutes = true;
-        }
-        if (outcome.failed) {
-          failed = true;
-        }
+
+        results.push({
+          accountId,
+          siteId: context.site.id,
+          status: failed ? 'failed' : 'success',
+          scanned: targets.length,
+          supported,
+          unsupported,
+          inconclusive,
+          skipped,
+          updatedRows,
+          message: failed
+            ? 'model availability probe finished with partial failures'
+            : 'model availability probe finished',
+        });
+      } finally {
+        releaseProbeAccountLease(accountId, siteId);
       }
-
-      results.push({
-        accountId,
-        siteId: context.site.id,
-        status: failed ? 'failed' : 'success',
-        scanned: targets.length,
-        supported,
-        unsupported,
-        inconclusive,
-        skipped,
-        updatedRows,
-        message: failed
-          ? 'model availability probe finished with partial failures'
-          : 'model availability probe finished',
-      });
-    } finally {
-      releaseProbeAccountLease(accountId);
     }
-  }
+  });
+
+  // 等待所有站点处理完成
+  await Promise.all(sitePromises);
 
   let rebuiltRoutes = false;
   if (input.rebuildRoutes !== false && shouldRebuildRoutes) {
@@ -428,7 +511,10 @@ export function startModelAvailabilityProbeScheduler(intervalMs = config.modelAv
       title: '后台模型可用性探测',
     });
   }, safeIntervalMs);
-  probeSchedulerTimer.unref?.();
+  // 尝试 unref，如果可用的话
+  if (typeof probeSchedulerTimer === 'object' && probeSchedulerTimer !== null && 'unref' in probeSchedulerTimer) {
+    probeSchedulerTimer.unref();
+  }
   return {
     enabled: true,
     intervalMs: safeIntervalMs,
@@ -444,4 +530,5 @@ export function stopModelAvailabilityProbeScheduler() {
 
 export function __resetModelAvailabilityProbeExecutionStateForTests(): void {
   probeAccountLeases.clear();
+  probeSiteLeases.clear();
 }

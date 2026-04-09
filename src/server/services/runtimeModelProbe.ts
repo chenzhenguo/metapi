@@ -9,6 +9,7 @@ import {
 } from './upstreamEndpointRuntime.js';
 import { executeEndpointFlow, type BuiltEndpointRequest } from '../proxy-core/orchestration/endpointFlow.js';
 import type { schema } from '../db/index.js';
+import { config } from '../config.js';
 
 export type RuntimeModelProbeStatus = 'supported' | 'unsupported' | 'inconclusive' | 'skipped';
 
@@ -58,13 +59,59 @@ function classifyUnsupportedFailure(status: number, rawErrorText: string): boole
   return DEFINITE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-function buildProbeBody(modelName: string): Record<string, unknown> {
+// 多样化提示词库
+const DEFAULT_PROBE_PROMPTS = [
+  'Hello, can you help me?',
+  'What is your name?',
+  'How are you today?',
+  'Can you say hello?',
+  'Tell me a short sentence.',
+  'What time is it?',
+  'How do you do?',
+  'Nice to meet you.',
+  'Can you help with a question?',
+  'Greetings!',
+];
+
+// 使用配置的提示词或默认提示词
+const PROBE_PROMPTS = config.modelAvailabilityProbePrompts.length > 0 
+  ? config.modelAvailabilityProbePrompts 
+  : DEFAULT_PROBE_PROMPTS;
+
+// 站点级提示词使用记录
+const sitePromptUsage = new Map<string, Set<string>>();
+
+function getRandomPrompt(siteId: string): string {
+  const usedPrompts = sitePromptUsage.get(siteId) || new Set();
+  const availablePrompts = PROBE_PROMPTS.filter(prompt => !usedPrompts.has(prompt));
+  
+  let selectedPrompt: string;
+  if (availablePrompts.length > 0) {
+    // 从可用提示词中选择
+    selectedPrompt = availablePrompts[Math.floor(Math.random() * availablePrompts.length)];
+  } else {
+    // 如果所有提示词都用过了，重置并重新选择
+    const resetPrompts = new Set<string>();
+    sitePromptUsage.set(siteId, resetPrompts);
+    selectedPrompt = PROBE_PROMPTS[Math.floor(Math.random() * PROBE_PROMPTS.length)];
+  }
+  
+  // 记录使用的提示词
+  const updatedUsedPrompts = sitePromptUsage.get(siteId) || new Set();
+  updatedUsedPrompts.add(selectedPrompt);
+  sitePromptUsage.set(siteId, updatedUsedPrompts);
+  
+  return selectedPrompt;
+}
+
+function buildProbeBody(modelName: string, siteId: string): Record<string, unknown> {
+  const prompt = getRandomPrompt(siteId);
   return {
     model: modelName,
     messages: [
       {
         role: 'user',
-        content: 'Reply with OK.',
+        content: prompt,
       },
     ],
     max_tokens: 8,
@@ -73,17 +120,20 @@ function buildProbeBody(modelName: string): Record<string, unknown> {
 }
 
 async function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timerId: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
       fn(),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-        timer.unref?.();
+        timerId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+        // 尝试 unref，如果可用的话
+        if (typeof timerId === 'object' && timerId !== null && 'unref' in timerId) {
+          timerId.unref();
+        }
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    if (timerId) clearTimeout(timerId);
   }
 }
 
@@ -155,7 +205,7 @@ export async function probeRuntimeModel(input: {
       account: input.account,
       downstreamHeaders: {},
     });
-    const openaiBody = buildProbeBody(input.modelName);
+    const openaiBody = buildProbeBody(input.modelName, String(input.site.id));
     const channelProxyUrl = resolveChannelProxyUrl(input.site, input.account.extraConfig);
     const abortController = new AbortController();
     const remainingExecutionTimeoutMs = resolveRemainingTimeoutMs(
@@ -165,7 +215,10 @@ export async function probeRuntimeModel(input: {
     const abortTimer = setTimeout(() => {
       abortController.abort(new Error(`runtime model probe timeout (${Math.round(input.timeoutMs / 1000)}s)`));
     }, remainingExecutionTimeoutMs);
-    abortTimer.unref?.();
+    // 尝试 unref，如果可用的话
+    if (typeof abortTimer === 'object' && abortTimer !== null && 'unref' in abortTimer) {
+      abortTimer.unref();
+    }
 
     const buildRequest = (endpoint: UpstreamEndpoint): BuiltEndpointRequest => {
       const request = buildUpstreamEndpointRequest({
