@@ -1,0 +1,51 @@
+# 数据库批量操作优化实施计划
+
+- [x] 1. 实现 collectCurrentRuntimeStateSnapshot() 分页加载优化
+  - [x] 1.1 创建分页查询工具函数
+    - 在 backupService.ts 中实现 batchQueryAll(db, table, batchSize) 工具函数
+    - 每次查询最多返回 batchSize 条记录，支持游标分页
+  - [x] 1.2 重构 proxyLogs 分页加载
+    - 将 `db.select().from(schema.proxyLogs).all()` 改为分页加载
+    - 按 id 升序分页，每次最多 10 条，循环直到加载完全部数据
+    - 使用累积变量收集所有 proxyLogs 数据
+  - [x] 1.3 重构其他大表分页加载
+    - 对 checkinLogs 表实现相同分页策略
+
+- [x] 2. 实现 importAccountsSection() 分批插入优化
+  - [x] 2.1 创建分批插入工具函数
+    - 实现 batchInsertHelper(tx, table, records, batchSize) 工具函数
+    - 每批最多插入 10 条记录，循环直到完成
+  - [x] 2.2 重构 sites 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.3 重构 siteApiEndpoints 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.4 重构 accounts 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.5 重构 accountTokens 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.6 重构 tokenRoutes 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.7 重构 routeChannels 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.8 重构 routeGroupSources 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.9 重构 modelAvailability 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.10 重构 tokenModelAvailability 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.11 重构 siteDisabledModels 表分批插入
+    - 将 for 循环插入改为 batchInsertHelper 分批执行
+  - [x] 2.12 重构 siteAnnouncements 表分批插入
+    - 将 for 循环改为批量收集记录后使用 batchInsertHelper 分批执行
+  - [x] 2.13 重构 proxyLogs 表分批插入
+    - 将 for 循环改为批量收集记录后使用 batchInsertHelper 分批执行
+  - [x] 2.14 重构 checkinLogs 表分批插入
+    - 将 for 循环改为批量收集记录后使用 batchInsertHelper 分批执行
+
+- [x] 3. 检查点 - 确保代码编译通过
+  - 运行 TypeScript 编译检查
+  - 确保没有语法错误
+
+- [x] 4. 编写单元测试
+  - [x] 4.1 为 batchQueryAll 编写单元测试
+  - [x] 4.2 为 batchInsertHelper 编写单元测试

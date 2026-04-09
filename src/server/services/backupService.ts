@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, gt } from 'drizzle-orm';
 import cron from 'node-cron';
 import { db, schema } from '../db/index.js';
 import { requireInsertedRowId } from '../db/insertHelpers.js';
@@ -8,6 +8,48 @@ import { getOauthInfoFromAccount } from './oauth/oauthAccount.js';
 import { PLATFORM_ALIASES, detectPlatformByUrlHint } from '../../shared/platformIdentity.js';
 
 const BACKUP_VERSION = '2.1';
+
+const DEFAULT_BATCH_SIZE = 10;
+
+async function batchQueryAll(
+  table: any,
+  dbInstance: typeof db,
+  batchSize: number = DEFAULT_BATCH_SIZE,
+): Promise<any[]> {
+  const results: any[] = [];
+  let lastId: number | undefined = undefined;
+  let hasMore = true;
+
+  while (hasMore) {
+    const query = lastId === undefined
+      ? dbInstance.select().from(table)
+      : dbInstance.select().from(table).where(gt(table.id, lastId));
+
+    const batch = await query.limit(batchSize).all();
+    
+    if (batch.length === 0) {
+      hasMore = false;
+    } else {
+      results.push(...batch);
+      lastId = batch[batch.length - 1].id;
+      hasMore = batch.length === batchSize;
+    }
+  }
+
+  return results;
+}
+
+async function batchInsertHelper<T extends Record<string, unknown>>(
+  tx: any,
+  table: any,
+  records: T[],
+  batchSize: number = DEFAULT_BATCH_SIZE,
+): Promise<void> {
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
+    await tx.insert(table).values(batch).run();
+  }
+}
 
 export type BackupExportType = 'all' | 'accounts' | 'preferences';
 
@@ -459,8 +501,6 @@ async function collectCurrentRuntimeStateSnapshot(): Promise<RuntimeStateSnapsho
     accountTokens,
     tokenRoutes,
     routeChannels,
-    proxyLogs,
-    checkinLogs,
     siteAnnouncements,
     modelAvailability,
     tokenModelAvailability,
@@ -471,13 +511,14 @@ async function collectCurrentRuntimeStateSnapshot(): Promise<RuntimeStateSnapsho
     db.select().from(schema.accountTokens).all(),
     db.select().from(schema.tokenRoutes).all(),
     db.select().from(schema.routeChannels).all(),
-    db.select().from(schema.proxyLogs).all(),
-    db.select().from(schema.checkinLogs).all(),
     db.select().from(schema.siteAnnouncements).all(),
     db.select().from(schema.modelAvailability).all(),
     db.select().from(schema.tokenModelAvailability).all(),
     db.select().from(schema.downstreamApiKeys).all(),
   ]);
+
+  const proxyLogs = await batchQueryAll(schema.proxyLogs, db);
+  const checkinLogs = await batchQueryAll(schema.checkinLogs, db);
 
   const siteKeyById = new Map<number, string>();
   for (const row of sites) {
@@ -1531,47 +1572,45 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
     await tx.delete(schema.accounts).run();
     await tx.delete(schema.sites).run();
 
-    for (const row of section.sites) {
-      await tx.insert(schema.sites).values({
-        id: row.id,
-        name: row.name,
-        url: row.url,
-        externalCheckinUrl: row.externalCheckinUrl ?? null,
-        platform: row.platform,
-        proxyUrl: row.proxyUrl ?? null,
-        useSystemProxy: row.useSystemProxy ?? false,
-        customHeaders: row.customHeaders ?? null,
-        status: row.status || 'active',
-        isPinned: row.isPinned ?? false,
-        sortOrder: row.sortOrder ?? 0,
-        globalWeight: row.globalWeight ?? 1,
-        apiKey: row.apiKey,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }).run();
-    }
+    const sitesRecords = section.sites.map((row) => ({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      externalCheckinUrl: row.externalCheckinUrl ?? null,
+      platform: row.platform,
+      proxyUrl: row.proxyUrl ?? null,
+      useSystemProxy: row.useSystemProxy ?? false,
+      customHeaders: row.customHeaders ?? null,
+      status: row.status || 'active',
+      isPinned: row.isPinned ?? false,
+      sortOrder: row.sortOrder ?? 0,
+      globalWeight: row.globalWeight ?? 1,
+      apiKey: row.apiKey,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    await batchInsertHelper(tx, schema.sites, sitesRecords);
 
-    for (const row of section.siteApiEndpoints || []) {
-      await tx.insert(schema.siteApiEndpoints).values({
-        id: row.id,
-        siteId: row.siteId,
-        url: row.url,
-        enabled: row.enabled ?? true,
-        sortOrder: row.sortOrder ?? 0,
-        cooldownUntil: row.cooldownUntil ?? null,
-        lastSelectedAt: row.lastSelectedAt ?? null,
-        lastFailedAt: row.lastFailedAt ?? null,
-        lastFailureReason: row.lastFailureReason ?? null,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }).run();
-    }
+    const siteApiEndpointsRecords = (section.siteApiEndpoints || []).map((row) => ({
+      id: row.id,
+      siteId: row.siteId,
+      url: row.url,
+      enabled: row.enabled ?? true,
+      sortOrder: row.sortOrder ?? 0,
+      cooldownUntil: row.cooldownUntil ?? null,
+      lastSelectedAt: row.lastSelectedAt ?? null,
+      lastFailedAt: row.lastFailedAt ?? null,
+      lastFailureReason: row.lastFailureReason ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    await batchInsertHelper(tx, schema.siteApiEndpoints, siteApiEndpointsRecords);
 
-    for (const row of section.accounts) {
+    const accountsRecords = section.accounts.map((row) => {
       const oauthColumns = resolveImportedOauthColumns(row);
       const accountKey = importedIndexes.accountKeyById.get(row.id);
       const runtimeAccount = accountKey ? runtimeState.accountRuntimeByKey.get(accountKey) : undefined;
-      await tx.insert(schema.accounts).values({
+      return {
         id: row.id,
         siteId: row.siteId,
         username: row.username,
@@ -1594,54 +1633,52 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         extraConfig: row.extraConfig,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-      }).run();
-    }
+      };
+    });
+    await batchInsertHelper(tx, schema.accounts, accountsRecords);
 
-    for (const row of section.accountTokens) {
-      await tx.insert(schema.accountTokens).values({
-        id: row.id,
-        accountId: row.accountId,
-        name: row.name,
-        token: row.token,
-        tokenGroup: row.tokenGroup ?? null,
-        valueStatus: row.valueStatus ?? 'ready',
-        source: row.source,
-        enabled: row.enabled,
-        isDefault: row.isDefault,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }).run();
-    }
+    const accountTokensRecords = section.accountTokens.map((row) => ({
+      id: row.id,
+      accountId: row.accountId,
+      name: row.name,
+      token: row.token,
+      tokenGroup: row.tokenGroup ?? null,
+      valueStatus: row.valueStatus ?? 'ready',
+      source: row.source,
+      enabled: row.enabled,
+      isDefault: row.isDefault,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    await batchInsertHelper(tx, schema.accountTokens, accountTokensRecords);
 
-    for (const row of section.tokenRoutes) {
-      await tx.insert(schema.tokenRoutes).values({
-        id: row.id,
-        modelPattern: row.modelPattern,
-        displayName: row.displayName ?? null,
-        displayIcon: row.displayIcon ?? null,
-        modelMapping: row.modelMapping,
-        routeMode: row.routeMode ?? 'pattern',
-        decisionSnapshot: row.decisionSnapshot ?? null,
-        decisionRefreshedAt: row.decisionRefreshedAt ?? null,
-        routingStrategy: row.routingStrategy ?? 'weighted',
-        enabled: row.enabled,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      }).run();
-    }
+    const tokenRoutesRecords = section.tokenRoutes.map((row) => ({
+      id: row.id,
+      modelPattern: row.modelPattern,
+      displayName: row.displayName ?? null,
+      displayIcon: row.displayIcon ?? null,
+      modelMapping: row.modelMapping,
+      routeMode: row.routeMode ?? 'pattern',
+      decisionSnapshot: row.decisionSnapshot ?? null,
+      decisionRefreshedAt: row.decisionRefreshedAt ?? null,
+      routingStrategy: row.routingStrategy ?? 'weighted',
+      enabled: row.enabled,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    await batchInsertHelper(tx, schema.tokenRoutes, tokenRoutesRecords);
 
-    for (const row of section.routeGroupSources || []) {
-      await tx.insert(schema.routeGroupSources).values({
-        id: row.id,
-        groupRouteId: row.groupRouteId,
-        sourceRouteId: row.sourceRouteId,
-      }).run();
-    }
+    const routeGroupSourcesRecords = (section.routeGroupSources || []).map((row) => ({
+      id: row.id,
+      groupRouteId: row.groupRouteId,
+      sourceRouteId: row.sourceRouteId,
+    }));
+    await batchInsertHelper(tx, schema.routeGroupSources, routeGroupSourcesRecords);
 
-    for (const row of section.routeChannels) {
+    const routeChannelsRecords = section.routeChannels.map((row) => {
       const channelKey = importedIndexes.channelKeyById.get(row.id);
       const runtimeChannel = channelKey ? runtimeState.routeChannelRuntimeByKey.get(channelKey) : undefined;
-      await tx.insert(schema.routeChannels).values({
+      return {
         id: row.id,
         routeId: row.routeId,
         accountId: row.accountId,
@@ -1661,74 +1698,85 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         consecutiveFailCount: runtimeChannel?.consecutiveFailCount ?? row.consecutiveFailCount ?? 0,
         cooldownLevel: runtimeChannel?.cooldownLevel ?? row.cooldownLevel ?? 0,
         cooldownUntil: runtimeChannel?.cooldownUntil ?? row.cooldownUntil,
-      }).run();
-    }
+      };
+    });
+    await batchInsertHelper(tx, schema.routeChannels, routeChannelsRecords);
 
     if (shouldReplaceSiteDisabledModels) {
-      for (const row of section.siteDisabledModels || []) {
-        await tx.insert(schema.siteDisabledModels).values({
-          siteId: row.siteId,
-          modelName: row.modelName,
-        }).run();
-      }
+      const siteDisabledModelsRecords = (section.siteDisabledModels || []).map((row) => ({
+        siteId: row.siteId,
+        modelName: row.modelName,
+      }));
+      await batchInsertHelper(tx, schema.siteDisabledModels, siteDisabledModelsRecords);
     }
 
     const importedManualModelKeys = new Set<string>();
     if (shouldReplaceManualModels) {
       const checkedAt = new Date().toISOString();
-      for (const row of section.manualModels || []) {
+      const manualModelsRecords = (section.manualModels || []).map((row) => {
         const accountKey = importedIndexes.accountKeyById.get(row.accountId);
         if (accountKey) {
           importedManualModelKeys.add(buildModelAvailabilityIdentityKey(accountKey, row.modelName));
         }
-        await tx.insert(schema.modelAvailability).values({
+        return {
           accountId: row.accountId,
           modelName: row.modelName,
           available: true,
           isManual: true,
           latencyMs: null,
           checkedAt,
-        }).run();
-      }
+        };
+      });
+      await batchInsertHelper(tx, schema.modelAvailability, manualModelsRecords);
     }
 
-    for (const row of runtimeState.nonManualAvailability) {
-      if (!row.accountKey) continue;
-      const accountId = importedIndexes.accountIdByKey.get(row.accountKey);
-      if (!accountId) continue;
-      const modelKey = buildModelAvailabilityIdentityKey(row.accountKey, row.modelName);
-      if (importedManualModelKeys.has(modelKey)) continue;
+    const nonManualAvailabilityRecords = runtimeState.nonManualAvailability
+      .filter((row) => {
+        if (!row.accountKey) return false;
+        const accountId = importedIndexes.accountIdByKey.get(row.accountKey);
+        if (!accountId) return false;
+        return true;
+      })
+      .map((row) => {
+        const accountKey = row.accountKey!;
+        const accountId = importedIndexes.accountIdByKey.get(accountKey)!;
+        const modelKey = buildModelAvailabilityIdentityKey(accountKey, row.modelName);
+        return {
+          accountId,
+          modelName: row.modelName,
+          available: row.available,
+          isManual: false,
+          latencyMs: row.latencyMs ?? null,
+          checkedAt: row.checkedAt,
+        };
+      });
+    await batchInsertHelper(tx, schema.modelAvailability, nonManualAvailabilityRecords);
 
-      await tx.insert(schema.modelAvailability).values({
-        accountId,
-        modelName: row.modelName,
-        available: row.available,
-        isManual: false,
-        latencyMs: row.latencyMs ?? null,
-        checkedAt: row.checkedAt,
-      }).run();
-    }
+    const tokenAvailabilityRecords = runtimeState.tokenAvailability
+      .filter((row) => {
+        if (!row.tokenKey) return false;
+        const tokenId = importedIndexes.tokenIdByKey.get(row.tokenKey);
+        return !!tokenId;
+      })
+      .map((row) => {
+        const tokenKey = row.tokenKey!;
+        const tokenId = importedIndexes.tokenIdByKey.get(tokenKey)!;
+        return {
+          tokenId,
+          modelName: row.modelName,
+          available: row.available,
+          latencyMs: row.latencyMs ?? null,
+          checkedAt: row.checkedAt,
+      };
+    });
+    await batchInsertHelper(tx, schema.tokenModelAvailability, tokenAvailabilityRecords);
 
-    for (const row of runtimeState.tokenAvailability) {
-      if (!row.tokenKey) continue;
-      const tokenId = importedIndexes.tokenIdByKey.get(row.tokenKey);
-      if (!tokenId) continue;
-
-      await tx.insert(schema.tokenModelAvailability).values({
-        tokenId,
-        modelName: row.modelName,
-        available: row.available,
-        latencyMs: row.latencyMs ?? null,
-        checkedAt: row.checkedAt,
-      }).run();
-    }
-
+    const siteAnnouncementsRecords: typeof schema.siteAnnouncements.$inferInsert[] = [];
     for (const row of runtimeState.siteAnnouncements) {
       if (!row.siteKey) continue;
       const siteId = importedIndexes.siteIdByKey.get(row.siteKey);
       if (!siteId) continue;
-
-      await tx.insert(schema.siteAnnouncements).values({
+      siteAnnouncementsRecords.push({
         siteId,
         platform: row.platform,
         sourceKey: row.sourceKey,
@@ -1745,8 +1793,9 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         readAt: row.readAt ?? null,
         dismissedAt: row.dismissedAt ?? null,
         rawPayload: row.rawPayload ?? null,
-      }).run();
+      });
     }
+    await batchInsertHelper(tx, schema.siteAnnouncements, siteAnnouncementsRecords);
 
     const downstreamApiKeyIdByKey = shouldReplaceDownstreamApiKeys
       ? new Map<string, number>()
@@ -1783,15 +1832,14 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
       }
     }
 
-    for (const row of runtimeState.proxyLogs) {
+    const proxyLogsRecords = runtimeState.proxyLogs.map((row) => {
       const accountId = row.accountKey ? (importedIndexes.accountIdByKey.get(row.accountKey) ?? null) : null;
       const routeId = row.routeKey ? (importedIndexes.routeIdByKey.get(row.routeKey) ?? null) : null;
       const channelId = row.channelKey ? (importedIndexes.channelIdByKey.get(row.channelKey) ?? null) : null;
       const downstreamApiKeyId = row.downstreamApiKeyKey
         ? (downstreamApiKeyIdByKey.get(row.downstreamApiKeyKey) ?? null)
         : null;
-
-      await tx.insert(schema.proxyLogs).values({
+      return {
         id: row.id,
         routeId,
         channelId,
@@ -1814,22 +1862,24 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         errorMessage: row.errorMessage ?? null,
         retryCount: row.retryCount ?? 0,
         createdAt: row.createdAt,
-      }).run();
-    }
+      };
+    });
+    await batchInsertHelper(tx, schema.proxyLogs, proxyLogsRecords);
 
-    for (const row of runtimeState.checkinLogs) {
-      const accountId = row.accountKey ? importedIndexes.accountIdByKey.get(row.accountKey) : undefined;
-      if (!accountId) continue;
-
-      await tx.insert(schema.checkinLogs).values({
-        id: row.id,
-        accountId,
-        status: row.status,
-        message: row.message ?? null,
-        reward: row.reward ?? null,
-        createdAt: row.createdAt,
-      }).run();
-    }
+    const checkinLogsRecords = runtimeState.checkinLogs
+      .filter((row) => row.accountKey && importedIndexes.accountIdByKey.get(row.accountKey))
+      .map((row) => {
+        const accountKey = row.accountKey!;
+        return {
+          id: row.id,
+          accountId: importedIndexes.accountIdByKey.get(accountKey)!,
+          status: row.status,
+          message: row.message ?? null,
+          reward: row.reward ?? null,
+          createdAt: row.createdAt,
+        };
+      });
+    await batchInsertHelper(tx, schema.checkinLogs, checkinLogsRecords);
   });
 }
 
