@@ -349,23 +349,33 @@ Metapi 当前的配置关系可以概括为：
 - 改善用户体验，减少等待时间
 - 及时发现和处理异常情况
 
-### 服务器级超时设置
+### 数据库连接超时设置
 
 | 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
 |--------|------|--------|--------|----------|
-| `requestTimeout` | Fastify 服务器请求超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
-| `keepAliveTimeout` | Fastify 服务器连接保持超时 | 65,000ms (65秒) | 65,000ms - 120,000ms | 代码固定 |
+| MySQL `acquireTimeout` | MySQL 连接池获取连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| MySQL `timeout` | MySQL 连接池连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| PostgreSQL `connectionTimeoutMillis` | PostgreSQL 连接池连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| PostgreSQL `idleTimeoutMillis` | PostgreSQL 连接池空闲超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
 
-### 服务级超时设置
+### 网关服务超时设置
 
 | 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
 |--------|------|--------|--------|----------|
+| `DEFAULT_PROXY_CONNECT_TIMEOUT_MS` | 代理连接超时 | 10,000ms (10秒) | 5,000-15,000ms | 代码固定 |
 | `PROXY_FIRST_BYTE_TIMEOUT_SEC` | 代理首字节超时（秒） | 0 (无超时) | 30-60秒 | 环境变量 / 管理后台 |
 | `TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC` | 路由失败冷却上限 | 2,592,000秒 (30天) | 86,400秒 (24小时) | 环境变量 / 管理后台 |
 | `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS` | 模型可用性探测超时 | 15,000ms (15秒) | 10,000-20,000ms | 环境变量 |
 | `PROXY_SESSION_CHANNEL_LEASE_TTL_MS` | 会话通道租约超时 | 90,000ms (90秒) | 60,000-120,000ms | 环境变量 |
 | `PROXY_SESSION_CHANNEL_LEASE_KEEPALIVE_MS` | 会话通道保活间隔 | 15,000ms (15秒) | 10,000-30,000ms | 环境变量 |
 | `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS` | 会话通道排队等待 | 1,500ms (1.5秒) | 1,000-3,000ms | 环境变量 / 管理后台 |
+
+### 服务器级超时设置
+
+| 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
+|--------|------|--------|--------|----------|
+| `requestTimeout` | Fastify 服务器请求超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| `keepAliveTimeout` | Fastify 服务器连接保持超时 | 65,000ms (65秒) | 65,000ms - 120,000ms | 代码固定 |
 
 ### Docker 级超时设置
 
@@ -396,7 +406,9 @@ services:
 
 #### 开发环境
 
-- **建议值**：
+- **数据库超时**：
+  - 保持默认值（5分钟），确保开发过程中不会因超时而中断
+- **网关超时**：
   - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 60秒
   - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 20,000ms
   - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 3,000ms
@@ -404,7 +416,9 @@ services:
 
 #### 测试环境
 
-- **建议值**：
+- **数据库超时**：
+  - 保持默认值（5分钟），确保测试过程的稳定性
+- **网关超时**：
   - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 45秒
   - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 15,000ms
   - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 2,000ms
@@ -412,7 +426,10 @@ services:
 
 #### 生产环境
 
-- **建议值**：
+- **数据库超时**：
+  - 可根据实际部署环境调整，建议 3-5 分钟
+  - 对于高并发场景，可适当缩短以快速释放资源
+- **网关超时**：
   - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 30秒
   - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 10,000ms
   - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 1,500ms
@@ -433,6 +450,11 @@ services:
 4. **多层超时配合**：
    - 服务器级超时 > 服务级超时 > 操作级超时
    - 确保各层超时设置相互配合，避免过早或过晚的超时触发
+
+5. **数据库连接池管理**：
+   - 监控数据库连接池的使用情况
+   - 根据实际并发量调整连接池大小
+   - 确保连接池超时设置与应用层超时设置相匹配
 
 ## 下一步
 
