@@ -179,5 +179,7 @@ export function buildFastifyOptions(
     logger: true,
     trustProxy: true,
     bodyLimit: appConfig.requestBodyLimit,
+    requestTimeout: 300_000,
+    keepAliveTimeout: 65_000,
   };
 }
