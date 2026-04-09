@@ -269,8 +269,18 @@ interface BackupImportResult {
     importedApiKeyConnections: number;
     skippedAccounts: number;
     ignoredSections: string[];
+    // 新增统计参数
+    newSites: number;
+    updatedSites: number;
+    newAccounts: number;
+    updatedAccounts: number;
+    newTokens: number;
+    updatedTokens: number;
+    newSettings: number;
+    updatedSettings: number;
   };
   warnings?: string[];
+  errors?: string[];
 }
 
 const EXCLUDED_SETTING_KEYS = new Set<string>([
@@ -1006,6 +1016,14 @@ function buildAllApiHubV2AccountsSection(data: RawBackupData): {
       importedApiKeyConnections,
       skippedAccounts,
       ignoredSections,
+      newSites: section.sites.length,
+      updatedSites: 0,
+      newAccounts: importedAccounts,
+      updatedAccounts: 0,
+      newTokens: section.accountTokens.length,
+      updatedTokens: 0,
+      newSettings: 0,
+      updatedSettings: 0,
     },
     warnings,
   };
@@ -1564,7 +1582,14 @@ function detectImportMetadata(data: RawBackupData): {
   };
 }
 
-async function importAccountsSection(section: AccountsBackupSection): Promise<void> {
+async function importAccountsSection(section: AccountsBackupSection): Promise<{
+  newSites: number;
+  updatedSites: number;
+  newAccounts: number;
+  updatedAccounts: number;
+  newTokens: number;
+  updatedTokens: number;
+}> {
   const startTime = Date.now();
   console.log('[backup] Starting importAccountsSection');
   
@@ -1576,138 +1601,248 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
   const importedIndexes = buildRuntimeIdentityIndexesFromSection(section);
   console.log('[backup] buildRuntimeIdentityIndexesFromSection completed in', Date.now() - indexesStartTime, 'ms');
   
+  // 初始化统计变量
+  const stats = {
+    newSites: 0,
+    updatedSites: 0,
+    newAccounts: 0,
+    updatedAccounts: 0,
+    newTokens: 0,
+    updatedTokens: 0,
+  };
+  
   const shouldReplaceSiteDisabledModels = Array.isArray(section.siteDisabledModels);
   const shouldReplaceManualModels = Array.isArray(section.manualModels);
   const shouldReplaceDownstreamApiKeys = Array.isArray(section.downstreamApiKeys);
 
-  // 第一步：删除现有数据（小事务）
-  console.log('[backup] Starting deletion transaction');
-  const deletionStartTime = Date.now();
+  // 第一步：获取现有数据的索引，用于智能对比
+  console.log('[backup] Starting existing data indexing');
+  const existingDataStartTime = Date.now();
+  const existingSites = await db.select().from(schema.sites).all();
+  const existingAccounts = await db.select().from(schema.accounts).all();
+  const existingTokens = await db.select().from(schema.accountTokens).all();
+  const existingRoutes = await db.select().from(schema.tokenRoutes).all();
+  
+  const existingSiteKeys = new Set(existingSites.map(site => buildSiteIdentityKey(site)));
+  const existingAccountIds = new Set(existingAccounts.map(account => account.id));
+  const existingTokenIds = new Set(existingTokens.map(token => token.id));
+  const existingRouteIds = new Set(existingRoutes.map(route => route.id));
+  console.log('[backup] Existing data indexing completed in', Date.now() - existingDataStartTime, 'ms');
+
+  // 第二步：智能导入核心数据（使用单个事务提高效率）
+  console.log('[backup] Starting smart core data import');
+  const coreImportStartTime = Date.now();
+  
   await db.transaction(async (tx) => {
-    if (shouldReplaceDownstreamApiKeys) {
-      await tx.delete(schema.downstreamApiKeys).run();
+    // 处理站点数据
+    for (const site of section.sites) {
+      const siteKey = buildSiteIdentityKey(site);
+      const existingSite = existingSites.find(s => buildSiteIdentityKey(s) === siteKey);
+      
+      if (existingSite) {
+        // 更新现有站点
+        await tx.update(schema.sites).set({
+          name: site.name,
+          url: site.url,
+          externalCheckinUrl: site.externalCheckinUrl ?? null,
+          platform: site.platform,
+          proxyUrl: site.proxyUrl ?? null,
+          useSystemProxy: site.useSystemProxy ?? false,
+          customHeaders: site.customHeaders ?? null,
+          status: site.status || 'active',
+          isPinned: site.isPinned ?? false,
+          sortOrder: site.sortOrder ?? 0,
+          globalWeight: site.globalWeight ?? 1,
+          apiKey: site.apiKey,
+          updatedAt: site.updatedAt,
+        }).where(eq(schema.sites.id, existingSite.id)).run();
+        stats.updatedSites++;
+      } else {
+        // 插入新站点
+        await tx.insert(schema.sites).values({
+          id: site.id,
+          name: site.name,
+          url: site.url,
+          externalCheckinUrl: site.externalCheckinUrl ?? null,
+          platform: site.platform,
+          proxyUrl: site.proxyUrl ?? null,
+          useSystemProxy: site.useSystemProxy ?? false,
+          customHeaders: site.customHeaders ?? null,
+          status: site.status || 'active',
+          isPinned: site.isPinned ?? false,
+          sortOrder: site.sortOrder ?? 0,
+          globalWeight: site.globalWeight ?? 1,
+          apiKey: site.apiKey,
+          createdAt: site.createdAt,
+          updatedAt: site.updatedAt,
+        }).run();
+        stats.newSites++;
+      }
     }
-    await tx.delete(schema.proxyLogs).run();
-    await tx.delete(schema.routeChannels).run();
-    await tx.delete(schema.routeGroupSources).run();
-    await tx.delete(schema.tokenRoutes).run();
-    await tx.delete(schema.tokenModelAvailability).run();
-    await tx.delete(schema.modelAvailability).run();
-    await tx.delete(schema.accountTokens).run();
-    await tx.delete(schema.accounts).run();
-    await tx.delete(schema.sites).run();
-  });
-  console.log('[backup] Deletions completed in', Date.now() - deletionStartTime, 'ms');
-
-  // 第二步：插入核心数据（小事务）
-  console.log('[backup] Starting core data insertion transaction');
-  const coreInsertStartTime = Date.now();
-  await db.transaction(async (tx) => {
-    const sitesRecords = section.sites.map((row) => ({
-      id: row.id,
-      name: row.name,
-      url: row.url,
-      externalCheckinUrl: row.externalCheckinUrl ?? null,
-      platform: row.platform,
-      proxyUrl: row.proxyUrl ?? null,
-      useSystemProxy: row.useSystemProxy ?? false,
-      customHeaders: row.customHeaders ?? null,
-      status: row.status || 'active',
-      isPinned: row.isPinned ?? false,
-      sortOrder: row.sortOrder ?? 0,
-      globalWeight: row.globalWeight ?? 1,
-      apiKey: row.apiKey,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
-    await batchInsertHelper(tx, schema.sites, sitesRecords);
-    console.log('[backup] sites insertion completed in', Date.now() - coreInsertStartTime, 'ms, count:', sitesRecords.length);
-
-    const siteApiEndpointsRecords = (section.siteApiEndpoints || []).map((row) => ({
-      id: row.id,
-      siteId: row.siteId,
-      url: row.url,
-      enabled: row.enabled ?? true,
-      sortOrder: row.sortOrder ?? 0,
-      cooldownUntil: row.cooldownUntil ?? null,
-      lastSelectedAt: row.lastSelectedAt ?? null,
-      lastFailedAt: row.lastFailedAt ?? null,
-      lastFailureReason: row.lastFailureReason ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
-    await batchInsertHelper(tx, schema.siteApiEndpoints, siteApiEndpointsRecords);
-
-    const accountsRecords = section.accounts.map((row) => {
+    
+    // 处理站点API端点
+    if (section.siteApiEndpoints) {
+      await batchInsertHelper(tx, schema.siteApiEndpoints, section.siteApiEndpoints.map((row) => ({
+        id: row.id,
+        siteId: row.siteId,
+        url: row.url,
+        enabled: row.enabled ?? true,
+        sortOrder: row.sortOrder ?? 0,
+        cooldownUntil: row.cooldownUntil ?? null,
+        lastSelectedAt: row.lastSelectedAt ?? null,
+        lastFailedAt: row.lastFailedAt ?? null,
+        lastFailureReason: row.lastFailureReason ?? null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })));
+    }
+    
+    // 处理账号数据
+    for (const row of section.accounts) {
       const oauthColumns = resolveImportedOauthColumns(row);
       const accountKey = importedIndexes.accountKeyById.get(row.id);
       const runtimeAccount = accountKey ? runtimeState.accountRuntimeByKey.get(accountKey) : undefined;
-      return {
+      
+      if (existingAccountIds.has(row.id)) {
+        // 更新现有账号
+        await tx.update(schema.accounts).set({
+          siteId: row.siteId,
+          username: row.username,
+          accessToken: row.accessToken,
+          apiToken: row.apiToken,
+          oauthProvider: oauthColumns.oauthProvider,
+          oauthAccountKey: oauthColumns.oauthAccountKey,
+          oauthProjectId: oauthColumns.oauthProjectId,
+          balance: row.balance,
+          balanceUsed: runtimeAccount?.balanceUsed ?? row.balanceUsed,
+          quota: row.quota,
+          unitCost: row.unitCost,
+          valueScore: row.valueScore,
+          status: row.status,
+          isPinned: row.isPinned ?? false,
+          sortOrder: row.sortOrder ?? 0,
+          checkinEnabled: row.checkinEnabled,
+          lastCheckinAt: runtimeAccount?.lastCheckinAt ?? row.lastCheckinAt,
+          lastBalanceRefresh: runtimeAccount?.lastBalanceRefresh ?? row.lastBalanceRefresh,
+          extraConfig: row.extraConfig,
+          updatedAt: row.updatedAt,
+        }).where(eq(schema.accounts.id, row.id)).run();
+        stats.updatedAccounts++;
+      } else {
+        // 插入新账号
+        await tx.insert(schema.accounts).values({
+          id: row.id,
+          siteId: row.siteId,
+          username: row.username,
+          accessToken: row.accessToken,
+          apiToken: row.apiToken,
+          oauthProvider: oauthColumns.oauthProvider,
+          oauthAccountKey: oauthColumns.oauthAccountKey,
+          oauthProjectId: oauthColumns.oauthProjectId,
+          balance: row.balance,
+          balanceUsed: runtimeAccount?.balanceUsed ?? row.balanceUsed,
+          quota: row.quota,
+          unitCost: row.unitCost,
+          valueScore: row.valueScore,
+          status: row.status,
+          isPinned: row.isPinned ?? false,
+          sortOrder: row.sortOrder ?? 0,
+          checkinEnabled: row.checkinEnabled,
+          lastCheckinAt: runtimeAccount?.lastCheckinAt ?? row.lastCheckinAt,
+          lastBalanceRefresh: runtimeAccount?.lastBalanceRefresh ?? row.lastBalanceRefresh,
+          extraConfig: row.extraConfig,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        }).run();
+        stats.newAccounts++;
+      }
+    }
+    
+    // 处理账号令牌
+    for (const row of section.accountTokens) {
+      if (existingTokenIds.has(row.id)) {
+        // 更新现有令牌
+        await tx.update(schema.accountTokens).set({
+          accountId: row.accountId,
+          name: row.name,
+          token: row.token,
+          tokenGroup: row.tokenGroup ?? null,
+          valueStatus: row.valueStatus ?? 'ready',
+          source: row.source,
+          enabled: row.enabled,
+          isDefault: row.isDefault,
+          updatedAt: row.updatedAt,
+        }).where(eq(schema.accountTokens.id, row.id)).run();
+        stats.updatedTokens++;
+      } else {
+        // 插入新令牌
+        await tx.insert(schema.accountTokens).values({
+          id: row.id,
+          accountId: row.accountId,
+          name: row.name,
+          token: row.token,
+          tokenGroup: row.tokenGroup ?? null,
+          valueStatus: row.valueStatus ?? 'ready',
+          source: row.source,
+          enabled: row.enabled,
+          isDefault: row.isDefault,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        }).run();
+        stats.newTokens++;
+      }
+    }
+    
+    // 处理路由数据
+    for (const row of section.tokenRoutes) {
+      if (existingRouteIds.has(row.id)) {
+        // 更新现有路由
+        await tx.update(schema.tokenRoutes).set({
+          modelPattern: row.modelPattern,
+          displayName: row.displayName ?? null,
+          displayIcon: row.displayIcon ?? null,
+          modelMapping: row.modelMapping,
+          routeMode: row.routeMode ?? 'pattern',
+          decisionSnapshot: row.decisionSnapshot ?? null,
+          decisionRefreshedAt: row.decisionRefreshedAt ?? null,
+          routingStrategy: row.routingStrategy ?? 'weighted',
+          enabled: row.enabled,
+          updatedAt: row.updatedAt,
+        }).where(eq(schema.tokenRoutes.id, row.id)).run();
+      } else {
+        // 插入新路由
+        await tx.insert(schema.tokenRoutes).values({
+          id: row.id,
+          modelPattern: row.modelPattern,
+          displayName: row.displayName ?? null,
+          displayIcon: row.displayIcon ?? null,
+          modelMapping: row.modelMapping,
+          routeMode: row.routeMode ?? 'pattern',
+          decisionSnapshot: row.decisionSnapshot ?? null,
+          decisionRefreshedAt: row.decisionRefreshedAt ?? null,
+          routingStrategy: row.routingStrategy ?? 'weighted',
+          enabled: row.enabled,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        }).run();
+      }
+    }
+    
+    // 处理路由组源
+    if (section.routeGroupSources && section.routeGroupSources.length > 0) {
+      // 先删除现有路由组源，再重新插入
+      await tx.delete(schema.routeGroupSources).run();
+      await batchInsertHelper(tx, schema.routeGroupSources, section.routeGroupSources.map((row) => ({
         id: row.id,
-        siteId: row.siteId,
-        username: row.username,
-        accessToken: row.accessToken,
-        apiToken: row.apiToken,
-        oauthProvider: oauthColumns.oauthProvider,
-        oauthAccountKey: oauthColumns.oauthAccountKey,
-        oauthProjectId: oauthColumns.oauthProjectId,
-        balance: row.balance,
-        balanceUsed: runtimeAccount?.balanceUsed ?? row.balanceUsed,
-        quota: row.quota,
-        unitCost: row.unitCost,
-        valueScore: row.valueScore,
-        status: row.status,
-        isPinned: row.isPinned ?? false,
-        sortOrder: row.sortOrder ?? 0,
-        checkinEnabled: row.checkinEnabled,
-        lastCheckinAt: runtimeAccount?.lastCheckinAt ?? row.lastCheckinAt,
-        lastBalanceRefresh: runtimeAccount?.lastBalanceRefresh ?? row.lastBalanceRefresh,
-        extraConfig: row.extraConfig,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      };
-    });
-    await batchInsertHelper(tx, schema.accounts, accountsRecords);
-
-    const accountTokensRecords = section.accountTokens.map((row) => ({
-      id: row.id,
-      accountId: row.accountId,
-      name: row.name,
-      token: row.token,
-      tokenGroup: row.tokenGroup ?? null,
-      valueStatus: row.valueStatus ?? 'ready',
-      source: row.source,
-      enabled: row.enabled,
-      isDefault: row.isDefault,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
-    await batchInsertHelper(tx, schema.accountTokens, accountTokensRecords);
-
-    const tokenRoutesRecords = section.tokenRoutes.map((row) => ({
-      id: row.id,
-      modelPattern: row.modelPattern,
-      displayName: row.displayName ?? null,
-      displayIcon: row.displayIcon ?? null,
-      modelMapping: row.modelMapping,
-      routeMode: row.routeMode ?? 'pattern',
-      decisionSnapshot: row.decisionSnapshot ?? null,
-      decisionRefreshedAt: row.decisionRefreshedAt ?? null,
-      routingStrategy: row.routingStrategy ?? 'weighted',
-      enabled: row.enabled,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
-    await batchInsertHelper(tx, schema.tokenRoutes, tokenRoutesRecords);
-
-    const routeGroupSourcesRecords = (section.routeGroupSources || []).map((row) => ({
-      id: row.id,
-      groupRouteId: row.groupRouteId,
-      sourceRouteId: row.sourceRouteId,
-    }));
-    await batchInsertHelper(tx, schema.routeGroupSources, routeGroupSourcesRecords);
-
-    const routeChannelsRecords = section.routeChannels.map((row) => {
+        groupRouteId: row.groupRouteId,
+        sourceRouteId: row.sourceRouteId,
+      })));
+    }
+    
+    // 处理路由通道
+    // 先删除现有路由通道，再重新插入（因为通道依赖关系复杂）
+    await tx.delete(schema.routeChannels).run();
+    await batchInsertHelper(tx, schema.routeChannels, section.routeChannels.map((row) => {
       const channelKey = importedIndexes.channelKeyById.get(row.id);
       const runtimeChannel = channelKey ? runtimeState.routeChannelRuntimeByKey.get(channelKey) : undefined;
       return {
@@ -1731,10 +1866,50 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         cooldownLevel: runtimeChannel?.cooldownLevel ?? row.cooldownLevel ?? 0,
         cooldownUntil: runtimeChannel?.cooldownUntil ?? row.cooldownUntil,
       };
-    });
-    await batchInsertHelper(tx, schema.routeChannels, routeChannelsRecords);
+    }));
   });
-  console.log('[backup] Core data insertion completed in', Date.now() - coreInsertStartTime, 'ms');
+  console.log('[backup] Smart core data import completed in', Date.now() - coreImportStartTime, 'ms');
+  console.log('[backup] Import stats:', stats);
+
+  // 第二步.5：清理不再存在的记录
+  console.log('[backup] Starting cleanup of obsolete records');
+  const cleanupStartTime = Date.now();
+  
+  await db.transaction(async (tx) => {
+    // 清理不在备份中的站点
+    const backupSiteKeys = new Set(section.sites.map(site => buildSiteIdentityKey(site)));
+    for (const existingSite of existingSites) {
+      if (!backupSiteKeys.has(buildSiteIdentityKey(existingSite))) {
+        await tx.delete(schema.sites).where(eq(schema.sites.id, existingSite.id)).run();
+      }
+    }
+    
+    // 清理不在备份中的账号
+    const backupAccountIds = new Set(section.accounts.map(account => account.id));
+    for (const existingAccount of existingAccounts) {
+      if (!backupAccountIds.has(existingAccount.id)) {
+        await tx.delete(schema.accounts).where(eq(schema.accounts.id, existingAccount.id)).run();
+      }
+    }
+    
+    // 清理不在备份中的令牌
+    const backupTokenIds = new Set(section.accountTokens.map(token => token.id));
+    for (const existingToken of existingTokens) {
+      if (!backupTokenIds.has(existingToken.id)) {
+        await tx.delete(schema.accountTokens).where(eq(schema.accountTokens.id, existingToken.id)).run();
+      }
+    }
+    
+    // 清理不在备份中的路由
+    const backupRouteIds = new Set(section.tokenRoutes.map(route => route.id));
+    for (const existingRoute of existingRoutes) {
+      if (!backupRouteIds.has(existingRoute.id)) {
+        await tx.delete(schema.tokenRoutes).where(eq(schema.tokenRoutes.id, existingRoute.id)).run();
+      }
+    }
+  });
+  
+  console.log('[backup] Cleanup completed in', Date.now() - cleanupStartTime, 'ms');
 
   // 第三步：插入辅助数据（小事务）
   console.log('[backup] Starting auxiliary data insertion transaction');
@@ -1929,21 +2104,42 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
   console.log('[backup] Logs insertion completed in', Date.now() - logsInsertStartTime, 'ms');
   
   console.log('[backup] importAccountsSection completed in', Date.now() - startTime, 'ms');
+  
+  // 计算统计数据
+  stats.newSites = section.sites.length;
+  stats.newAccounts = section.accounts.length;
+  stats.newTokens = section.accountTokens.length;
+  
+  return stats;
 }
 
-async function importPreferencesSection(section: PreferencesBackupSection): Promise<Array<{ key: string; value: unknown }>> {
+async function importPreferencesSection(section: PreferencesBackupSection): Promise<{
+  applied: Array<{ key: string; value: unknown }>;
+  newSettings: number;
+  updatedSettings: number;
+}> {
   const applied: Array<{ key: string; value: unknown }> = [];
+  let newSettings = 0;
+  let updatedSettings = 0;
 
   await db.transaction(async (tx) => {
     for (const row of section.settings) {
       if (!isSettingValueAcceptable(row.key, row.value)) continue;
+
+      // 检查设置是否已存在
+      const existingRow = await tx.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, row.key)).get();
+      if (existingRow) {
+        updatedSettings++;
+      } else {
+        newSettings++;
+      }
 
       await upsertSetting(row.key, row.value, tx);
       applied.push({ key: row.key, value: row.value });
     }
   });
 
-  return applied;
+  return { applied, newSettings, updatedSettings };
 }
 
 export async function importBackup(data: RawBackupData): Promise<BackupImportResult> {
@@ -1970,22 +2166,71 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
   let accountsImported = false;
   let preferencesImported = false;
   let appliedSettings: Array<{ key: string; value: unknown }> = [];
+  const errors: string[] = [];
+  
+  // 初始化统计数据
+  let accountsStats = {
+    newSites: 0,
+    updatedSites: 0,
+    newAccounts: 0,
+    updatedAccounts: 0,
+    newTokens: 0,
+    updatedTokens: 0,
+  };
+  
+  let settingsStats = {
+    newSettings: 0,
+    updatedSettings: 0,
+  };
 
   if (accountsRequested) {
     if (!accountsSection) {
-      throw new Error('导入数据格式错误：账号数据结构不正确');
+      errors.push('导入数据格式错误：账号数据结构不正确');
+    } else {
+      try {
+        accountsStats = await importAccountsSection(accountsSection);
+        accountsImported = true;
+      } catch (error: any) {
+        errors.push(`账号导入失败：${error.message}`);
+      }
     }
-    await importAccountsSection(accountsSection);
-    accountsImported = true;
   }
 
   if (preferencesRequested) {
     if (!preferencesSection) {
-      throw new Error('导入数据格式错误：设置数据结构不正确');
+      errors.push('导入数据格式错误：设置数据结构不正确');
+    } else {
+      try {
+        const result = await importPreferencesSection(preferencesSection);
+        appliedSettings = result.applied;
+        settingsStats = {
+          newSettings: result.newSettings,
+          updatedSettings: result.updatedSettings,
+        };
+        preferencesImported = true;
+      } catch (error: any) {
+        errors.push(`设置导入失败：${error.message}`);
+      }
     }
-    appliedSettings = await importPreferencesSection(preferencesSection);
-    preferencesImported = true;
   }
+
+  // 合并统计数据
+  const summary = {
+    importedSites: importMetadata.summary?.importedSites || 0,
+    importedAccounts: importMetadata.summary?.importedAccounts || 0,
+    importedProfiles: importMetadata.summary?.importedProfiles || 0,
+    importedApiKeyConnections: importMetadata.summary?.importedApiKeyConnections || 0,
+    skippedAccounts: importMetadata.summary?.skippedAccounts || 0,
+    ignoredSections: importMetadata.summary?.ignoredSections || [],
+    newSites: accountsStats.newSites,
+    updatedSites: accountsStats.updatedSites,
+    newAccounts: accountsStats.newAccounts,
+    updatedAccounts: accountsStats.updatedAccounts,
+    newTokens: accountsStats.newTokens,
+    updatedTokens: accountsStats.updatedTokens,
+    newSettings: settingsStats.newSettings,
+    updatedSettings: settingsStats.updatedSettings,
+  };
 
   return {
     allImported: (!accountsRequested || accountsImported) && (!preferencesRequested || preferencesImported),
@@ -1994,8 +2239,9 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
       preferences: preferencesImported,
     },
     appliedSettings,
-    summary: importMetadata.summary,
+    summary,
     warnings: importMetadata.warnings,
+    errors: errors.length > 0 ? errors : undefined,
   };
 }
 
