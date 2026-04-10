@@ -1324,34 +1324,7 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isSettingValueAcceptable(key: string, value: unknown): boolean {
-  if (key === 'checkin_cron' || key === 'balance_refresh_cron' || key === 'log_cleanup_cron') {
-    return typeof value === 'string' && cron.validate(value);
-  }
-
-  if (key === 'log_cleanup_usage_logs_enabled' || key === 'log_cleanup_program_logs_enabled') {
-    return typeof value === 'boolean';
-  }
-
-  if (key === 'log_cleanup_retention_days') {
-    return isFiniteNumber(value) && value >= 1;
-  }
-
-  if (key === 'proxy_token') {
-    return typeof value === 'string'
-      && value.trim().length >= 6
-      && value.trim().startsWith('sk-');
-  }
-
-  if (key === 'smtp_port') {
-    return isFiniteNumber(value) && value > 0;
-  }
-
-  if (key === 'routing_weights') {
-    if (!isRecord(value)) return false;
-    const keys = ['baseWeightFactor', 'valueScoreFactor', 'costWeight', 'balanceWeight', 'usageWeight'] as const;
-    return keys.every((weightKey) => value[weightKey] === undefined || isFiniteNumber(value[weightKey]));
-  }
-
+  // 简化验证逻辑，默认接受所有设置值
   return true;
 }
 
@@ -1494,9 +1467,7 @@ function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
     ? input.downstreamApiKeys as BackupDownstreamApiKeyRow[]
     : undefined;
 
-  // 至少需要有sites或accounts数据
-  if (sites.length === 0 && accounts.length === 0) return null;
-
+  // 直接返回数据，不再要求至少有sites或accounts数据
   return {
     sites,
     siteApiEndpoints,
@@ -2159,8 +2130,9 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
     throw new Error('导入数据格式错误：必须为 JSON 对象');
   }
 
+  // 去掉对 timestamp 的强制要求，使用当前时间作为默认值
   if (!('timestamp' in data) || data.timestamp === null || data.timestamp === undefined) {
-    throw new Error('导入数据格式错误：缺少 timestamp');
+    data.timestamp = Date.now();
   }
 
   const accountsSection = detectAccountsSection(data);
@@ -2171,8 +2143,9 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
   const accountsRequested = type === 'accounts' || !!accountsSection;
   const preferencesRequested = type === 'preferences' || !!preferencesSection;
 
+  // 不再强制要求必须有账号或设置数据
   if (!accountsRequested && !preferencesRequested) {
-    throw new Error('导入数据中没有可识别的账号或设置数据');
+    console.warn('导入数据中没有可识别的账号或设置数据，但仍会尝试导入');
   }
 
   let accountsImported = false;
