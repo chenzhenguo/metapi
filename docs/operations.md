@@ -135,8 +135,10 @@ npm run dev
 | `notify failed` | 通知发送失败 | 检查 [通知渠道配置](./configuration.md#通知渠道) |
 | `checkin failed` | 签到失败 | 检查账号状态和站点连通性 |
 | `balance refresh failed` | 余额刷新失败 | 检查账号凭证，可能需要重新登录 |
-| `proxy timeout` | 代理请求超时 | 上游响应过慢；检查网络延迟或考虑切换其他通道 |
+| `proxy timeout` | 代理请求超时 | 上游响应过慢；检查网络延迟、调整超时配置或考虑切换其他通道 |
 | `token expired` | Token 过期 | 系统会自动尝试续签；若反复出现，手动刷新 Token |
+| `first byte timeout` | 首字节超时 | 上游在指定时间内未返回首字节；考虑调整 `PROXY_FIRST_BYTE_TIMEOUT_SEC` 配置 |
+| `probe timeout` | 模型可用性探测超时 | 模型探测超时；考虑调整 `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS` 配置 |
 
 ## 健康检查
 
@@ -160,6 +162,10 @@ curl -sS http://localhost:4000/v1/chat/completions \
 
 - 定时请求 `/v1/models`，检查返回状态码和模型数量
 - 定时抽样请求 `/v1/chat/completions`，检查端到端可用性
+- 监控超时相关指标：
+  - 首字节超时率：统计 `first byte timeout` 事件
+  - 模型探测超时率：统计 `probe timeout` 事件
+  - 代理请求超时率：统计 `proxy timeout` 事件
 - SQLite / Desktop：监控磁盘空间（SQLite WAL 日志可能增长）
 - MySQL / Postgres：监控外部数据库空间、连接数和慢查询
 - 监控 Docker 容器状态

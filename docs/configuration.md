@@ -339,6 +339,123 @@ Metapi 当前的配置关系可以概括为：
 - 这类提醒不会自动触发部署，只是把用户带到「设置 → 更新中心」继续手动确认和执行
 - K3s 用户可以在收到提醒后直接去更新中心部署；Compose 用户也可以收到提醒，但仍按自己的升级方式处理
 
+## 超时配置最佳实践
+
+### 概述
+
+超时配置是确保系统稳定性和响应性的重要因素。合理的超时设置可以：
+- 防止请求无限期等待，提高系统可用性
+- 避免资源被长时间占用，提升系统吞吐量
+- 改善用户体验，减少等待时间
+- 及时发现和处理异常情况
+
+### 数据库连接超时设置
+
+| 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
+|--------|------|--------|--------|----------|
+| MySQL `acquireTimeout` | MySQL 连接池获取连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| MySQL `timeout` | MySQL 连接池连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| PostgreSQL `connectionTimeoutMillis` | PostgreSQL 连接池连接超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| PostgreSQL `idleTimeoutMillis` | PostgreSQL 连接池空闲超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+
+### 网关服务超时设置
+
+| 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
+|--------|------|--------|--------|----------|
+| `DEFAULT_PROXY_CONNECT_TIMEOUT_MS` | 代理连接超时 | 10,000ms (10秒) | 5,000-15,000ms | 代码固定 |
+| `PROXY_FIRST_BYTE_TIMEOUT_SEC` | 代理首字节超时（秒） | 0 (无超时) | 30-60秒 | 环境变量 / 管理后台 |
+| `TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC` | 路由失败冷却上限 | 2,592,000秒 (30天) | 86,400秒 (24小时) | 环境变量 / 管理后台 |
+| `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS` | 模型可用性探测超时 | 15,000ms (15秒) | 10,000-20,000ms | 环境变量 |
+| `PROXY_SESSION_CHANNEL_LEASE_TTL_MS` | 会话通道租约超时 | 90,000ms (90秒) | 60,000-120,000ms | 环境变量 |
+| `PROXY_SESSION_CHANNEL_LEASE_KEEPALIVE_MS` | 会话通道保活间隔 | 15,000ms (15秒) | 10,000-30,000ms | 环境变量 |
+| `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS` | 会话通道排队等待 | 1,500ms (1.5秒) | 1,000-3,000ms | 环境变量 / 管理后台 |
+
+### 服务器级超时设置
+
+| 配置项 | 说明 | 默认值 | 建议值 | 配置方式 |
+|--------|------|--------|--------|----------|
+| `requestTimeout` | Fastify 服务器请求超时 | 300,000ms (5分钟) | 300,000ms - 600,000ms | 代码固定 |
+| `keepAliveTimeout` | Fastify 服务器连接保持超时 | 65,000ms (65秒) | 65,000ms - 120,000ms | 代码固定 |
+
+### Docker 级超时设置
+
+在 Docker Compose 部署中，建议配置以下超时相关参数：
+
+```yaml
+# docker-compose.yml 示例
+services:
+  metapi:
+    image: metapi/metapi:latest
+    restart: unless-stopped
+    environment:
+      - PROXY_FIRST_BYTE_TIMEOUT_SEC=60
+      - TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC=86400
+      - MODEL_AVAILABILITY_PROBE_TIMEOUT_MS=15000
+    # 网络超时设置
+    network_mode: bridge
+    # 健康检查超时
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+```
+
+### 不同环境的配置指南
+
+#### 开发环境
+
+- **数据库超时**：
+  - 保持默认值（5分钟），确保开发过程中不会因超时而中断
+- **网关超时**：
+  - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 60秒
+  - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 20,000ms
+  - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 3,000ms
+- **理由**：开发环境可以设置较长的超时时间，便于调试和排查问题。
+
+#### 测试环境
+
+- **数据库超时**：
+  - 保持默认值（5分钟），确保测试过程的稳定性
+- **网关超时**：
+  - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 45秒
+  - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 15,000ms
+  - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 2,000ms
+- **理由**：测试环境需要模拟生产环境的行为，同时保持一定的容错性。
+
+#### 生产环境
+
+- **数据库超时**：
+  - 可根据实际部署环境调整，建议 3-5 分钟
+  - 对于高并发场景，可适当缩短以快速释放资源
+- **网关超时**：
+  - `PROXY_FIRST_BYTE_TIMEOUT_SEC`: 30秒
+  - `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS`: 10,000ms
+  - `PROXY_SESSION_CHANNEL_QUEUE_WAIT_MS`: 1,500ms
+  - `TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC`: 86,400秒 (24小时)
+- **理由**：生产环境需要更严格的超时控制，确保系统响应迅速，避免资源浪费。
+
+### 配置建议
+
+1. **根据网络环境调整**：如果部署在网络条件较差的环境，应适当增加超时时间。
+
+2. **根据模型特性调整**：对于生成式模型，尤其是长文本生成，可能需要更长的首字节超时时间。
+
+3. **监控与调优**：
+   - 观察代理日志中的超时事件
+   - 根据实际使用情况调整超时设置
+   - 定期检查系统性能，确保超时设置合理
+
+4. **多层超时配合**：
+   - 服务器级超时 > 服务级超时 > 操作级超时
+   - 确保各层超时设置相互配合，避免过早或过晚的超时触发
+
+5. **数据库连接池管理**：
+   - 监控数据库连接池的使用情况
+   - 根据实际并发量调整连接池大小
+   - 确保连接池超时设置与应用层超时设置相匹配
+
 ## 下一步
 
 - [部署指南](./deployment.md) — Docker Compose 与反向代理
