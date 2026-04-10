@@ -378,7 +378,14 @@ export async function executeModelAvailabilityProbe(input: {
         let failed = false;
 
         // 串行处理模型（TPM=1）
-        const probeOutcomes = [];
+        type ProbeOutcome = {
+          target: ProbeTarget;
+          probe: { status: ProbeStatus; latencyMs: number | null; reason: string };
+          touched: boolean;
+          availabilityChanged: boolean;
+          failed: boolean;
+        };
+        const probeOutcomes: ProbeOutcome[] = [];
         for (const target of targets) {
           try {
             // 添加延迟确保 TPM 限制
