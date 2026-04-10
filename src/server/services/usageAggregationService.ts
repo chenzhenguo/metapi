@@ -229,17 +229,22 @@ async function readProjectionCheckpoint(): Promise<ProjectionCheckpointRow> {
 
 async function ensureProjectionCheckpointExists() {
   const nowIso = new Date().toISOString();
-  await (db.insert(schema.analyticsProjectionCheckpoints).values({
-    projectorKey: USAGE_PROJECTOR_KEY,
-    timeZone: getResolvedTimeZone(),
-    lastProxyLogId: 0,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  }) as any)
-    .onConflictDoNothing({
-      target: schema.analyticsProjectionCheckpoints.projectorKey,
-    })
-    .run();
+  try {
+    await (db.insert(schema.analyticsProjectionCheckpoints).values({
+      projectorKey: USAGE_PROJECTOR_KEY,
+      timeZone: getResolvedTimeZone(),
+      lastProxyLogId: 0,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }) as any)
+      .run();
+  } catch (error) {
+    // Ignore duplicate key errors (conflicts)
+    if (error instanceof Error && (error.message.includes('duplicate key') || error.message.includes('UNIQUE constraint failed') || error.message.includes('Duplicate entry'))) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function tryAcquireProjectionLease(): Promise<ProjectionLease | null> {
