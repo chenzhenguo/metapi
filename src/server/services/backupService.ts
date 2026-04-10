@@ -1473,14 +1473,14 @@ export async function exportBackup(type: BackupExportType): Promise<BackupV2> {
 function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
   if (!isRecord(input)) return null;
 
-  const sites = Array.isArray(input.sites) ? input.sites as SiteRow[] : null;
+  const sites = Array.isArray(input.sites) ? input.sites as SiteRow[] : [];
   const siteApiEndpoints = Array.isArray(input.siteApiEndpoints)
     ? input.siteApiEndpoints as SiteApiEndpointRow[]
     : undefined;
-  const accounts = Array.isArray(input.accounts) ? input.accounts as BackupAccountRow[] : null;
-  const accountTokens = Array.isArray(input.accountTokens) ? input.accountTokens as AccountTokenRow[] : null;
-  const tokenRoutes = Array.isArray(input.tokenRoutes) ? input.tokenRoutes as TokenRouteRow[] : null;
-  const routeChannels = Array.isArray(input.routeChannels) ? input.routeChannels as BackupRouteChannelRow[] : null;
+  const accounts = Array.isArray(input.accounts) ? input.accounts as BackupAccountRow[] : [];
+  const accountTokens = Array.isArray(input.accountTokens) ? input.accountTokens as AccountTokenRow[] : [];
+  const tokenRoutes = Array.isArray(input.tokenRoutes) ? input.tokenRoutes as TokenRouteRow[] : [];
+  const routeChannels = Array.isArray(input.routeChannels) ? input.routeChannels as BackupRouteChannelRow[] : [];
   const routeGroupSources = Array.isArray(input.routeGroupSources)
     ? input.routeGroupSources as RouteGroupSourceRow[]
     : [];
@@ -1494,7 +1494,8 @@ function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
     ? input.downstreamApiKeys as BackupDownstreamApiKeyRow[]
     : undefined;
 
-  if (!sites || !accounts || !accountTokens || !tokenRoutes || !routeChannels) return null;
+  // 至少需要有sites或accounts数据
+  if (sites.length === 0 && accounts.length === 0) return null;
 
   return {
     sites,
@@ -1513,16 +1514,27 @@ function coerceAccountsSection(input: unknown): AccountsBackupSection | null {
 function coercePreferencesSection(input: unknown): PreferencesBackupSection | null {
   if (!isRecord(input)) return null;
   const settingsRaw = input.settings;
-  if (!Array.isArray(settingsRaw)) return null;
-
-  const settings = settingsRaw
-    .map((row) => {
-      if (!isRecord(row)) return null;
-      const key = typeof row.key === 'string' ? row.key.trim() : '';
-      if (!key || EXCLUDED_SETTING_KEYS.has(key)) return null;
-      return { key, value: row.value };
-    })
-    .filter((row): row is { key: string; value: unknown } => !!row);
+  
+  let settings: Array<{ key: string; value: unknown }> = [];
+  
+  if (Array.isArray(settingsRaw)) {
+    settings = settingsRaw
+      .map((row) => {
+        if (!isRecord(row)) return null;
+        const key = typeof row.key === 'string' ? row.key.trim() : '';
+        if (!key || EXCLUDED_SETTING_KEYS.has(key)) return null;
+        return { key, value: row.value };
+      })
+      .filter((row): row is { key: string; value: unknown } => !!row);
+  } else if (isRecord(settingsRaw)) {
+    // 处理对象格式的设置
+    settings = Object.entries(settingsRaw)
+      .map(([key, value]) => {
+        if (!key || EXCLUDED_SETTING_KEYS.has(key)) return null;
+        return { key, value };
+      })
+      .filter((row): row is { key: string; value: unknown } => !!row);
+  }
 
   return { settings };
 }
@@ -2185,20 +2197,20 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
 
   if (accountsRequested) {
     if (!accountsSection) {
-      errors.push('导入数据格式错误：账号数据结构不正确');
+      errors.push('导入数据格式错误：账号数据结构不正确，请检查备份文件格式');
     } else {
       try {
         accountsStats = await importAccountsSection(accountsSection);
         accountsImported = true;
       } catch (error: any) {
-        errors.push(`账号导入失败：${error.message}`);
+        errors.push(`账号导入失败：${error.message}，请检查账号数据是否完整`);
       }
     }
   }
 
   if (preferencesRequested) {
     if (!preferencesSection) {
-      errors.push('导入数据格式错误：设置数据结构不正确');
+      errors.push('导入数据格式错误：设置数据结构不正确，请检查备份文件格式');
     } else {
       try {
         const result = await importPreferencesSection(preferencesSection);
@@ -2209,7 +2221,7 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
         };
         preferencesImported = true;
       } catch (error: any) {
-        errors.push(`设置导入失败：${error.message}`);
+        errors.push(`设置导入失败：${error.message}，请检查设置数据是否有效`);
       }
     }
   }
