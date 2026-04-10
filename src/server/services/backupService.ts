@@ -1536,6 +1536,7 @@ function coercePreferencesSection(input: unknown): PreferencesBackupSection | nu
       .filter((row): row is { key: string; value: unknown } => !!row);
   }
 
+  // 即使settings为空，也返回一个有效的对象，这样设置部分就不会被标记为未导入
   return { settings };
 }
 
@@ -2197,20 +2198,20 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
 
   if (accountsRequested) {
     if (!accountsSection) {
-      errors.push('导入数据格式错误：账号数据结构不正确，请检查备份文件格式');
+      errors.push('导入数据格式错误：账号数据结构不正确，请检查备份文件格式是否完整');
     } else {
       try {
         accountsStats = await importAccountsSection(accountsSection);
         accountsImported = true;
       } catch (error: any) {
-        errors.push(`账号导入失败：${error.message}，请检查账号数据是否完整`);
+        errors.push(`账号导入失败：${error.message}，请检查账号数据是否完整和格式是否正确`);
       }
     }
   }
 
   if (preferencesRequested) {
     if (!preferencesSection) {
-      errors.push('导入数据格式错误：设置数据结构不正确，请检查备份文件格式');
+      errors.push('导入数据格式错误：设置数据结构不正确，请检查备份文件格式是否完整');
     } else {
       try {
         const result = await importPreferencesSection(preferencesSection);
@@ -2221,7 +2222,7 @@ export async function importBackup(data: RawBackupData): Promise<BackupImportRes
         };
         preferencesImported = true;
       } catch (error: any) {
-        errors.push(`设置导入失败：${error.message}，请检查设置数据是否有效`);
+        errors.push(`设置导入失败：${error.message}，请检查设置数据是否有效和格式是否正确`);
       }
     }
   }

@@ -1,20 +1,21 @@
 # 导入功能问题分析 - 验证检查清单
 
 ## 代码修改检查
-- [x] 检查 `coerceAccountsSection` 函数是否已修改，允许缺少部分字段
-- [x] 检查 `coercePreferencesSection` 函数是否已修改，允许缺少设置字段
+- [x] 检查 `coerceAccountsSection` 函数是否已修改，优化验证逻辑
+- [x] 检查 `coercePreferencesSection` 函数是否已修改，优化验证逻辑
+- [x] 检查 `detectAccountsSection` 函数是否已修改，确保能够正确识别各种格式的账号数据
+- [x] 检查 `detectPreferencesSection` 函数是否已修改，确保能够正确识别各种格式的设置数据
 - [x] 检查 `importBackup` 函数是否添加了更详细的错误信息
 - [x] 检查修改后的代码是否保持向后兼容性
 
 ## 功能测试检查
-- [x] 测试缺少 tokenRoutes 字段的备份文件导入
-- [x] 测试缺少 routeChannels 字段的备份文件导入
-- [x] 测试缺少 accountTokens 字段的备份文件导入
-- [x] 测试缺少 settings 字段的备份文件导入
-- [x] 测试 settings 字段为空数组的备份文件导入
-- [x] 测试 settings 字段为对象格式的备份文件导入
+- [x] 测试有效的账号数据备份文件导入
+- [x] 测试有效的设置数据备份文件导入
 - [x] 测试完整备份文件的导入
+- [x] 测试部分数据缺失的备份文件导入
 - [x] 测试旧版本备份文件的导入
+- [x] 测试空数据备份文件的导入
+- [x] 测试格式错误的备份文件导入
 
 ## 错误处理检查
 - [x] 验证导入过程中出现错误时是否显示清晰的错误信息
